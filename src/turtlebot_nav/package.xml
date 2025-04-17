@@ -18,6 +18,11 @@
   <depend>sensor_msgs</depend>
   <depend>turtlebot4_description</depend>
   <depend>turtlebot4_navigation</depend>
+  
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>opencv-python</exec_depend>
+  <exec_depend>image_transport</exec_depend>
+
 
 
   <export>

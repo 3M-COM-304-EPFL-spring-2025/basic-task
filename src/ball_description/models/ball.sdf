@@ -1,0 +1,17 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="pink_ball">
+    <static>false</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://ball_description/meshes/sim_ball_target.dae</uri>
+            <scale>0.2 0.2 0.2</scale>  <!-- Ajuste la taille si besoin -->
+          </mesh>
+        </geometry>
+      </visual>
+    </link>
+  </model>
+</sdf>
+

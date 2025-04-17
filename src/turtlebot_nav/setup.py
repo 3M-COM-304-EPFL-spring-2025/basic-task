@@ -20,6 +20,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+        	'ball_tracker = turtlebot_nav.ball_tracker:main',
         ],
     },
 )
