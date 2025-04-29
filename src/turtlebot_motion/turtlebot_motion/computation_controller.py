@@ -86,7 +86,8 @@ class ComputationController(Node):
         feedback = feedback_msg.feedback
         self.get_logger().info(f'Rotating... Remaining: {feedback.remaining_angle_travel}°')
 
-    def send_random_action(self):
+        """
+        def send_random_action(self):
         """ 
         " Randomly selects an action to send."
         " First actions sent are defined, to move the robot away from the origin."
@@ -114,7 +115,35 @@ class ComputationController(Node):
         else :
             action = random.choice(list(self._actions.keys()))
             self._actions[action]()
-            self.get_logger().info(f'Sending {self.move_count}-th random action: {action}')
+            self.get_logger().info(f'Sending {self.move_count}-th random action: {action}')"""
+    
+    def send_random_action(self):
+        """"
+        "Use keyboard to control the robot."
+        """
+
+        command = input("Enter command (d/l/r,u): ")
+        while command not in ['d', 'l', 'r', 'u']:
+            command = input("Invalid command! Enter d, l, or r: ")
+        self.move_count += 1
+        if command == 'd':
+            self._actions['drive']()
+            self.get_logger().info('Sending drive action')
+
+        elif command == 'l':
+            self._actions['left']()
+            self.get_logger().info('Sending left rotation')
+
+        elif command == 'r':
+            self._actions['right']()
+            self.get_logger().info('Sending right rotation')
+        elif command == 'u':
+            self.get_logger().info('Undocking the robot...')
+            self.send_goal('undock')
+            return
+        else:
+            self.get_logger().warn('Invalid command! Will shutdown...')
+
 
 def main(args=None):
     rclpy.init(args=args)
