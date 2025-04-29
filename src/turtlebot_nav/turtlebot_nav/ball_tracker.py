@@ -79,7 +79,7 @@ class BallTracker(Node):
             self.get_logger().error(f"Erreur de traitement d'image: {e}")
 
     def laser_callback(self, msg):
-        self.obstacle_detected = min(msg.ranges) < 0
+        self.obstacle_detected = min(msg.ranges) < 0.2
 
     def main_loop(self):
         if self.processing:
@@ -101,10 +101,11 @@ class BallTracker(Node):
                 else:
                     self.get_logger().info("🛑 Obstacle détecté, on ne bouge pas")
         else:
-            self.get_logger().info("🔍 Balle non visible, balayage")
+            if self.obstacle_detected:
+                self.get_logger().info("Obstacle trouvé")
             self.search_ball()
     def search_ball(self):
-            if self.action%4==0:
+            if self.action%4!=0:
                 self.send_goal_rotate(self.ROTATE_SCAN_ANGLE)
             else:
                 self.send_goal_drive(1.0)
