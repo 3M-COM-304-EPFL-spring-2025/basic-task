@@ -29,16 +29,18 @@ class LaserSubscriber(Node):
         self.accumulated_distance = 0.0
         self.closest_obstacle_distance = 1000.0 # closest obstacle distance forward (0-180 degrees)
         self.subscription  # prevent unused variable warning
+        self.size=0
 
     def listener_callback(self, msg):
         self.ranges = msg.ranges
-        self.left_distance = msg.ranges[320]
-        self.left_forward_distance = msg.ranges[240]
-        self.forward_distance = msg.ranges[160]
-        self.right_forward_distance = msg.ranges[80]
+        self.size=len(msg.ranges)
+        self.left_distance = msg.ranges[self.size//2]
+        self.left_forward_distance = msg.ranges[3*self.size//8]
+        self.forward_distance = msg.ranges[self.size//4]
+        self.right_forward_distance = msg.ranges[self.size//8]
         self.right_distance = msg.ranges[0]
-        self.back_distance = msg.ranges[480]
-        self.closest_obstacle_distance = min(msg.ranges[0:320])
+        self.back_distance = msg.ranges[3*self.size//4]
+        self.closest_obstacle_distance = min(msg.ranges[0:self.size//2])
         print(f"Left: {self.left_distance:.2f}, Forward: {self.forward_distance:.2f}, Right: {self.right_distance:.2f}, Back: {self.back_distance:.2f}")
         print(f"Closest obstacle distance: {self.closest_obstacle_distance:.2f}")
 
@@ -118,7 +120,7 @@ def detect_ball(camera_subscriber: CameraSubscriber, model: YOLO) -> bool:
         cv2.imshow("Annotated Frame", annotated_frame)
         cv2.waitKey(1)
 
-        if class_id == 32:  # Adjust according to your ball class ID
+        if class_id == 24:  # Adjust according to your ball class ID
             return True
 
     return False
@@ -134,10 +136,10 @@ def go_forward_until_obstacle(subscriber: LaserSubscriber, publisher: CmdVelPubl
         command.linear.x = speed
         publisher.get_logger().info(f"Moving forward at {round(speed, 2)} m/s")
         publisher.publisher_.publish(command)
-        subscriber.accumulated_distance += speed * 0.02  # Assuming 10Hz loop rate
+        subscriber.accumulated_distance += speed * 0.1  # Assuming 10Hz loop rate
         print(f"Accumulated distance: {subscriber.accumulated_distance:.2f} m")
 
-        if subscriber.accumulated_distance > 5.0:
+        if subscriber.accumulated_distance > 2.5:
             # Reset accumulated distance if too far
             subscriber.accumulated_distance = 0.0
             publisher.get_logger().info("Resetting accumulated distance.")
@@ -186,7 +188,7 @@ def spin_detect_ball(subscriber, publisher, command, camera_subscriber, model):
     ball_detected = False
 
     angular_speed = 2.0  # radians per second
-    angle_per_step = math.pi / 3  # 60 degrees = π/3 radians
+    angle_per_step = math.pi / 6  # 60 degrees = π/3 radians
     spin_time_per_step = angle_per_step / abs(angular_speed)  # time to rotate 60 degrees
 
     for step in range(6):
@@ -206,7 +208,7 @@ def spin_detect_ball(subscriber, publisher, command, camera_subscriber, model):
         # Stop rotation
         command = reset_commands(command)
         publisher.publisher_.publish(command)
-        time.sleep(0.2)  # short pause for stability
+        time.sleep(2)  # short pause for stability
 
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
 

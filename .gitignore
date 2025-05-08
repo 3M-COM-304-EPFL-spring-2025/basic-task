@@ -52,4 +52,4 @@ qtcreator-*
 # Catkin custom files
 CATKIN_IGNORE
 src/turtlebot_motion/turtlebot_motion/yolov8s.pt
-src/turtlebot_motion/turtlebot_motion/yolov8x.pt
+*.pt
