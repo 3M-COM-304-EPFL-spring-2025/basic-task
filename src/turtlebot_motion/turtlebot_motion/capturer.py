@@ -190,7 +190,7 @@ def main(args=None):
     camera_subscriber = CameraSubscriber()
     command = Twist()
 
-    model = YOLO("yolov8n.pt")
+    model = YOLO("yolov8x.pt")
 
     import time
     last_time = time.time()
