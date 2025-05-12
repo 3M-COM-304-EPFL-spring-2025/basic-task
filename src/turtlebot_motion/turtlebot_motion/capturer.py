@@ -80,6 +80,7 @@ class PIDController:
         output = max(self.output_limits[0], min(self.output_limits[1], output))
 
         self.prev_error = error
+        print(output)
         return output
     
 def reset_commands(command: Twist) -> Twist:
@@ -100,7 +101,7 @@ def classify_semi_circle_direction(img, box_coords, visualize=True):
     :param visualize: If True, draw an arrow indicating curvature
     :return: 'Left-sided semicircle', 'Right-sided semicircle', or 'Unknown'
     """
-    x1, y1, x2, y2 = box_coords
+    x1, y1, x2, y2 = map(int, box_coords)
     ball_roi = img[y1:y2, x1:x2]
 
     if ball_roi.size == 0:
@@ -189,7 +190,7 @@ def main(args=None):
     camera_subscriber = CameraSubscriber()
     command = Twist()
 
-    model = YOLO("yolo-Weights/yolov8x.pt")
+    model = YOLO("yolov8n.pt")
 
     import time
     last_time = time.time()
@@ -197,13 +198,15 @@ def main(args=None):
     pid = PIDController(Kp=0.005, Ki=0.0001, Kd=0.002, output_limits=(-1, 1))
     time_since_last_detection = 0  # For tracking ball lost time
     max_lost_time = 2.0  # Stop if ball is undetected for 2 seconds
-    threshold_area = 5000  # Example threshold for bounding box area
+    threshold_area = 4000  # Example threshold for bounding box area
     safe_distance = 0.5  # Example safe distance for obstacles
 
     try:
         while rclpy.ok():
+            print("Waiting for camera frame...")
             rclpy.spin_once(camera_subscriber)
             frame = camera_subscriber.current_frame
+            print("Frame received")
 
             if frame is None:
                 print("No frame received. Waiting...")
@@ -211,7 +214,9 @@ def main(args=None):
                 continue
 
             ball_detected, direction, bounding_box_area, box_center = detect_ball(camera_subscriber, model, frame)
-
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
             if ball_detected:
                 print("Ball detected!")
                 time_since_last_detection = 0
@@ -252,10 +257,10 @@ def main(args=None):
 
             publisher.publisher_.publish(command)
 
+            # Optional: Add a small delay to control loop frequency
+            time.sleep(5)
+
             # PID control logic (if needed for fine adjustments)
-            current_time = time.time()
-            dt = current_time - last_time
-            last_time = current_time
 
             # Example PID usage (if applicable):
             # error = desired_value - current_value
