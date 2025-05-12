@@ -55,6 +55,9 @@ class CameraSubscriber(Node):
         try:
             self.current_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
             cv2.imshow("Camera Feed", self.current_frame)
+            if cv2.getWindowProperty("Camera Feed", cv2.WND_PROP_VISIBLE) < 1:
+                cv2.destroyAllWindows()
+                return
             cv2.waitKey(1)
         except Exception as e:
             self.get_logger().error(f"Could not convert image: {e}")
@@ -152,13 +155,13 @@ def classify_semi_circle_direction(img, box_coords, visualize=True):
 
     return direction
 
-def detect_ball(camera_subscriber: CameraSubscriber, model, frame) -> tuple[bool, str, float]:
+def detect_ball(camera_subscriber: CameraSubscriber, model, frame) -> tuple[bool, str, float, float]:
     """Detects ball using YOLO model."""
     rclpy.spin_once(camera_subscriber)
 
     if camera_subscriber.current_frame is None:
         camera_subscriber.get_logger().info("No image received yet.")
-        return False
+        return False, None, 0.0, 0.0
 
     results = model(frame)
 
@@ -166,6 +169,7 @@ def detect_ball(camera_subscriber: CameraSubscriber, model, frame) -> tuple[bool
         box_coords = box.xyxy[0].tolist()
         x1, y1, x2, y2 = box_coords
         area = (x2 - x1) * (y2 - y1)
+        box_center = (box_coords[0] + box_coords[2]) / 2
 
         class_id = int(box.cls)
         annotated_frame = results[0].plot()
@@ -173,9 +177,9 @@ def detect_ball(camera_subscriber: CameraSubscriber, model, frame) -> tuple[bool
         cv2.waitKey(1)
 
         if class_id == 32:  # Adjust according to your ball class ID
-            return True, classify_semi_circle_direction(frame, box_coords), area
+            return True, classify_semi_circle_direction(frame, box_coords), area, box_center
 
-    return False
+    return False, None, 0.0, 0.0
 
 def main(args=None):
     print("Starting capture")
@@ -196,58 +200,73 @@ def main(args=None):
     threshold_area = 5000  # Example threshold for bounding box area
     safe_distance = 0.5  # Example safe distance for obstacles
 
-    while rclpy.ok():
-        rclpy.spin_once(camera_subscriber)
-        frame = camera_subscriber.current_frame
+    try:
+        while rclpy.ok():
+            rclpy.spin_once(camera_subscriber)
+            frame = camera_subscriber.current_frame
 
-        if frame is None:
-            print("No frame received. Waiting...")
-            time.sleep(0.1)
-            continue
+            if frame is None:
+                print("No frame received. Waiting...")
+                time.sleep(0.1)
+                continue
 
-        ball_detected, direction, bounding_box_area = detect_ball(camera_subscriber, model, frame)
+            ball_detected, direction, bounding_box_area, box_center = detect_ball(camera_subscriber, model, frame)
 
-        if ball_detected:
-            print("Ball detected!")
-            time_since_last_detection = 0
+            if ball_detected:
+                print("Ball detected!")
+                time_since_last_detection = 0
 
-            if bounding_box_area > threshold_area:
-                print("Ball is close enough. Stopping.")
-                command = reset_commands(command)
-            elif direction == "right":
-                print("Moving diagonal right to avoid obstacle")
-                command.linear.x = 0.5
-                command.angular.z = -0.5
-            elif direction == "left":
-                print("Moving diagonal left to avoid obstacle")
-                command.linear.x = 0.5
-                command.angular.z = 0.5
+                if bounding_box_area > threshold_area:
+                    print("Ball is close enough. Stopping.")
+                    command = reset_commands(command)
+                elif direction == "right":
+                    print("Moving diagonal right to avoid obstacle")
+                    frame_center = frame.shape[1] / 4
+                    error = frame_center - box_center
+                    pid_output = pid.compute(error, dt)
+                    command.linear.x = 0.5
+                    command.angular.z = pid_output
+                elif direction == "left":
+                    print("Moving diagonal left to avoid obstacle")
+                    frame_center = frame.shape[1] *3 / 4
+                    error = frame_center - box_center
+                    pid_output = pid.compute(error, dt)
+                    command.linear.x = 0.5
+                    command.angular.z = pid_output
+                else:
+                    print("Moving forward towards ball")
+                    frame_center = frame.shape[1] / 2
+                    error = frame_center - box_center
+                    pid_output = pid.compute(error, dt)
+                    command.angular.z = pid_output
+                    command.linear.x = 0.5
+
             else:
-                print("Moving forward towards ball")
-                command.linear.x = 0.5
-                command.angular.z = 0.0
-        else:
-            time_since_last_detection += time.time() - last_time
-            if time_since_last_detection > max_lost_time:
-                print("Ball lost for too long. Stopping.")
+                time_since_last_detection += time.time() - last_time
+                if time_since_last_detection > max_lost_time:
+                    print("Ball lost for too long. Stopping.")
+                    command = reset_commands(command)
+            if subscriber.forward_distance < safe_distance:
+                print("Obstacle detected! Stopping.")
                 command = reset_commands(command)
-        if subscriber.forward_distance < safe_distance:
-            print("Obstacle detected! Stopping.")
-            command = reset_commands(command)
 
+            publisher.publisher_.publish(command)
+
+            # PID control logic (if needed for fine adjustments)
+            current_time = time.time()
+            dt = current_time - last_time
+            last_time = current_time
+
+            # Example PID usage (if applicable):
+            # error = desired_value - current_value
+            # pid_output = pid.compute(error, dt)
+            # Adjust command.linear.x or command.angular.z based on pid_output
+
+    except KeyboardInterrupt:
+        print("Shutting down...")
+    finally:
+        reset_commands(command)
         publisher.publisher_.publish(command)
+        rclpy.shutdown()
 
-        # PID control logic (if needed for fine adjustments)
-        current_time = time.time()
-        dt = current_time - last_time
-        last_time = current_time
-
-        # Example PID usage (if applicable):
-        # error = desired_value - current_value
-        # pid_output = pid.compute(error, dt)
-        # Adjust command.linear.x or command.angular.z based on pid_output
-
-    # Cleanup
-    reset_commands(command)
-    publisher.publisher_.publish(command)
-    rclpy.shutdown()
+main()
