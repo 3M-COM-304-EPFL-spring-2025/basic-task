@@ -53,3 +53,4 @@ qtcreator-*
 CATKIN_IGNORE
 src/turtlebot_motion/turtlebot_motion/yolov8s.pt
 *.pt
+src/turtlebot_motion/turtlebot_motion/.cache/depthai/crashdumps/fea92d77501d2def0e0f9a915e46657e487b12ba/crash_dump.json
