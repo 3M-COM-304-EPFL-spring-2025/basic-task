@@ -218,10 +218,13 @@ def main(args=None):
     rclpy.init(args=args)
 
     navigation=NavigationClient()
-    cartographer=CartographerSubscriber()
-    
 
+    while rclpy.ok():
+        navigation.send_goal()
+
+    navigation.destroy_node()
     rclpy.shutdown()
+    
 
 
 if __name__ == '__main__':
