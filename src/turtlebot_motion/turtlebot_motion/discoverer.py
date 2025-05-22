@@ -4,16 +4,25 @@
 # -*- coding: utf-8 -*-
 
 
-# 3rd party
+# 3rd partys
 import numpy as np
 import pandas as pd
 import os
 import csv
 from ament_index_python.packages import get_package_share_directory
+from cv_bridge import CvBridge
+import cv2
+from ultralytics import YOLO
+from geometry_msgs.msg import Twist
+import time
+import math
+
 
 # ros
 import rclpy
 from rclpy.node import Node
+from sensor_msgs.msg import LaserScan, Image
+
 from rclpy.action import ActionServer, CancelResponse
 from rclpy.action import ActionClient
 from rcl_interfaces.msg import ParameterType
@@ -25,8 +34,44 @@ from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import MapMetaData
 from nav2_msgs.action import NavigateToPose
 
+from matplotlib import pyplot as plt
+
 
 # ros2 action send_goal wander explorer_interfaces/action/Wander "{strategy: 1, map_completed_thres: 0.6}"
+
+class LaserSubscriber(Node):
+    def __init__(self):
+        super().__init__('laser_subscriber')
+        self.subscription = self.create_subscription(LaserScan, 'scan', self.listener_callback, 10)
+        self.ranges = [0.0] * 640
+        self.forward_distance = 1000.0
+        self.left_forward_distance = 1000.0
+        self.right_forward_distance = 1000.0
+        self.left_distance = 1000.0
+        self.right_distance = 1000.0
+        self.back_distance = 1000.0
+        self.accumulated_distance = 0.0
+        self.closest_obstacle_distance = 1000.0 # closest obstacle distance forward (0-180 degrees)
+        self.subscription  # prevent unused variable warning
+        self.size=0
+
+    def listener_callback(self, msg):
+        self.ranges = msg.ranges
+        self.size=len(msg.ranges)
+        self.left_distance = msg.ranges[self.size//2]
+        self.left_forward_distance = msg.ranges[3*self.size//8]
+        self.forward_distance = msg.ranges[self.size//4]
+        self.right_forward_distance = msg.ranges[self.size//8]
+        self.right_distance = msg.ranges[0]
+        self.back_distance = msg.ranges[3*self.size//4]
+        self.closest_obstacle_distance = min(msg.ranges[0:self.size//2])
+        print(f"Left: {self.left_distance:.2f}, Forward: {self.forward_distance:.2f}, Right: {self.right_distance:.2f}, Back: {self.back_distance:.2f}")
+        print(f"Closest obstacle distance: {self.closest_obstacle_distance:.2f}")
+
+class CmdVelPublisher(Node):
+    def __init__(self):
+        super().__init__('cmd_vel_publisher')
+        self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)       
 
 
 
@@ -60,6 +105,8 @@ class NavigationClient(Node):
         rclpy.spin_once(self.cartographer)
 
     def send_goal(self):
+
+
         self.get_logger().info('Waiting for action server...')
         self._action_client.wait_for_server()
 
@@ -68,10 +115,9 @@ class NavigationClient(Node):
         self.cartographer.sorted_accessible_waypoints = self.cartographer.sorted_accessible_waypoints[1:]  # pop the
         # first element from the list, in case the
         # accessible waypoints didn't refresh
-
         # write command
         goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header.frame_id = 'base_footprint'
+        goal_msg.pose.header.frame_id = 'map'
         goal_msg.pose.pose.position.x = float(waypoint[0])
         goal_msg.pose.pose.position.y = float(waypoint[1])
         # goal_msg.pose.pose.orientation.w = 1.0
@@ -89,6 +135,7 @@ class NavigationClient(Node):
         get_result_future = goal_handle.get_result_async()
 
         rclpy.spin_until_future_complete(self, get_result_future)
+        return False
 
 
 class CartographerSubscriber(Node):
@@ -123,6 +170,7 @@ class CartographerSubscriber(Node):
         # An accessible waypoint is one which has no obstacles, and has few or no unknown squares in the vicinity.
         self.accessible_waypoints = np.array([])
         self.occupancy_value = np.array([])
+        unaccessible_waypoints = np.array([])
         for waypoint in self.waypoints:
             try:
                 occupancy_grid_coordinates = [int((waypoint[1] + 2.3) / resolution), int((waypoint[0] + 2.3) /
@@ -134,26 +182,83 @@ class CartographerSubscriber(Node):
                 if conv[0]:
                     self.accessible_waypoints = np.append(self.accessible_waypoints, waypoint)
                     self.occupancy_value = np.append(self.occupancy_value, conv[1])
+                else:
+                    # if the convolution returns False, it means the WP is not accessible, so it is stored in
+                    # self.unaccessible_waypoints
+                    unaccessible_waypoints = np.append(unaccessible_waypoints, waypoint)
             # because the waypoint array is over-sized, we need to remove the values that are out of range
+
             except IndexError:
                 pass
+
+            # scatter the accessible and unaccessible waypoints in the map with different colors
+            """
+            plt.scatter(self.accessible_waypoints[:, 0], self.accessible_waypoints[:, 1], c='green', s=1)
+            plt.scatter(unaccessible_waypoints[:, 0], unaccessible_waypoints[:, 1], c='red', s=1)
+            plt.xlim(0, 2.3)
+            plt.ylim(0, 2.3)
+            plt.title('Accessible waypoints')
+            plt.xlabel('X axis')
+            plt.ylabel('Y axis')
+            plt.grid()
+            plt.pause(0.01)  # Pause to update the plot
+            plt.clf()  # Clear the plot for the next iteration
+            plt.show()  # Show the plot
+            """
 
         # reshape the accessible waypoints array to shape (n, 2)
         self.accessible_waypoints = self.accessible_waypoints.reshape((-1, 2))
 
-        # Sorting waypoints according to occupancy value. This allows the robot to prioritize the waypoints with
-        # more uncertainty (it wont access the areas that are completely clear, thus going to the discovery frontier)
+        # Sorting...
         occupancy_value_idxs = self.occupancy_value.argsort()
         self.sorted_accessible_waypoints = self.accessible_waypoints[occupancy_value_idxs[::-1]]
 
-        # At the beginning, when all values are uncertain, we add some hardcoded waypoints so it begins to navigate
-        # and has time to discover accessible areas
+        # Default fallback waypoints
         if np.size(self.sorted_accessible_waypoints) == 0:
             self.sorted_accessible_waypoints = np.array([[1.5, 0.0], [0.0, 1.5], [-1.5, 0.0], [0.0, -1.5]])
 
-        # Once we have the new waypoints, they are saved in self.sorted_accessible_waypoints for use by the Navigator
-        # client
         self.get_logger().info('Accessible waypoints have been updated...')
+
+        # --- ⬇️ Visualization Part Starts Here ⬇️ ---
+        plt.figure(figsize=(8, 8))
+        # Draw the occupancy map
+        data_img = np.copy(data)
+        data_img[data_img == -1] = 128  # unknown -> gray
+        plt.imshow(data_img, cmap='gray', origin='lower')  # Map
+
+        # Draw waypoints
+        if self.accessible_waypoints.shape[0] > 0:
+            plt.scatter(
+                (self.accessible_waypoints[:, 0] + 2.3) / msg.info.resolution,
+                (self.accessible_waypoints[:, 1] + 2.3) / msg.info.resolution,
+                c='green', s=5, label='Accessible'
+            )
+
+        if unaccessible_waypoints.shape[0] > 0:
+            unaccessible_waypoints = unaccessible_waypoints.reshape(-1, 2)
+            plt.scatter(
+                (unaccessible_waypoints[:, 0] + 2.3) / msg.info.resolution,
+                (unaccessible_waypoints[:, 1] + 2.3) / msg.info.resolution,
+                c='red', s=5, label='Unaccessible'
+            )
+
+        # Draw navigation goal (first in sorted accessible list)
+        if self.sorted_accessible_waypoints.shape[0] > 0:
+            nav_goal = self.sorted_accessible_waypoints[0]
+            plt.scatter(
+                [(nav_goal[0] + 2.3) / msg.info.resolution],
+                [(nav_goal[1] + 2.3) / msg.info.resolution],
+                marker='*', c='blue', s=100, label='Navigation Goal'
+            )
+
+        plt.legend()
+        plt.title('Map with Accessible Waypoints and Navigation Goal')
+        plt.xlabel('Map X (cells)')
+        plt.ylabel('Map Y (cells)')
+        plt.grid(False)
+        plt.tight_layout()
+        plt.pause(0.001)
+        plt.clf()
 
     @staticmethod
     def convolute(data, coordinates, size=3, threshold=40):
@@ -169,7 +274,7 @@ class CartographerSubscriber(Node):
         :return: average: average occupancy probability of the convolution
         """
         sum = 0
-        for x in range(int(coordinates[0] - size / 2), int(coordinates[0] + size / 2)):
+        for x in range(int( coordinates[0] - size / 2), int(coordinates[0] + size / 2)):
             for y in range(int(coordinates[1] - size / 2), int(coordinates[1] + size / 2)):
                 # if the area is unknown, we add 100 to sum.
                 if data[x, y] == -1:
@@ -211,18 +316,125 @@ class CartographerSubscriber(Node):
                 i += 1
 
         self.get_logger().info("Grid of waypoints has been generated.")
-        return waypoints
 
+        return waypoints
+    
+class CameraSubscriber(Node):
+    def __init__(self):
+        print("Hi")
+        super().__init__('camera_subscriber')
+        self.subscription = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.listener_callback, 10)
+        print("Okay")
+        self.bridge = CvBridge()
+        print("Next")
+        self.current_frame = None
+
+    def listener_callback(self, msg):
+        try:
+            self.current_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+            cv2.imshow("Camera Feed", self.current_frame)
+            cv2.waitKey(1)
+        except Exception as e:
+            self.get_logger().error(f"Could not convert image: {e}")   
+    
+
+def detect_ball(camera_subscriber: CameraSubscriber, model: YOLO) -> bool:
+    """Detects ball using YOLO model."""
+    rclpy.spin_once(camera_subscriber)
+
+    if camera_subscriber.current_frame is None:
+        camera_subscriber.get_logger().info("No image received yet.")
+        return False
+
+    frame = camera_subscriber.current_frame
+    results = model(frame)
+
+    for box in results[0].boxes:
+        class_id = int(box.cls)
+        annotated_frame = results[0].plot()
+        cv2.imshow("Annotated Frame", annotated_frame)
+        cv2.waitKey(1)
+
+        if class_id == 24:  # Adjust according to your ball class ID
+            return True
+
+    return False          
+def reset_commands(command: Twist) -> Twist:
+    """Resets all Twist commands to zero."""
+    command.linear.x = 0.0
+    command.linear.y = 0.0
+    command.linear.z = 0.0
+    command.angular.x = 0.0
+    command.angular.y = 0.0
+    command.angular.z = 0.0
+    return command 
+
+def spin_detect_ball(subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
+    """
+    Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
+    """
+    command = reset_commands(command)
+    publisher.get_logger().info("Starting 360° spin with 6 detection checks...")
+
+    ball_detected = False
+
+    angular_speed = 2.0  # radians per second
+    angle_per_step = math.pi / 6  # 60 degrees = π/3 radians
+    spin_time_per_step = angle_per_step / abs(angular_speed)  # time to rotate 60 degrees
+
+    for step in range(6):
+        publisher.get_logger().info(f"Step {step + 1} of 6: Rotating {math.degrees(angle_per_step)} degrees...")
+
+        # Start rotating
+        command = reset_commands(command)
+        command.angular.z = angular_speed
+        publisher.publisher_.publish(command)
+
+        # Wait exactly the needed time
+        start_time = time.time()
+        while time.time() - start_time < 2*spin_time_per_step:
+            rclpy.spin_once(subscriber)
+            rclpy.spin_once(camera_subscriber)
+
+        # Stop rotation
+        command = reset_commands(command)
+        publisher.publisher_.publish(command)
+        time.sleep(2)  # short pause for stability
+
+        publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
+
+        # Perform YOLO detection
+        if detect_ball(camera_subscriber, model):
+            ball_detected = True
+            publisher.get_logger().info("Ball detected!")
+            break
+        else:
+            publisher.get_logger().info("No ball detected.")
+
+    command = reset_commands(command)
+    publisher.publisher_.publish(command)
+    publisher.get_logger().info("Finished 360° spin.")
+
+    return ball_detected
 
 def main(args=None):
     rclpy.init(args=args)
 
     navigation=NavigationClient()
+    laser_subscriber = LaserSubscriber()
+    camera_subscriber = CameraSubscriber()
+    cmd_vel_publisher = CmdVelPublisher()
+    command = Twist()
 
-    while rclpy.ok():
-        navigation.send_goal()
+    #while rclpy.ok():
+    navigation.send_goal()
+        #if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
+        #navigation.get_logger().info("Ball detected, stopping navigation.")
+        #break
 
     navigation.destroy_node()
+    laser_subscriber.destroy_node()
+    camera_subscriber.destroy_node()
     rclpy.shutdown()
     
 
