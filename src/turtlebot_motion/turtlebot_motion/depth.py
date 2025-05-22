@@ -1,9 +1,10 @@
 from rclpy.node import Node
 from std_msgs.msg import Bool
+from std_msgs.msg import Float32MultiArray
 from geometry_msgs.msg import Vector3
 import rclpy
 import depthai as dai
-import numpy as np
+import math
 
 class BallDetector(Node):
     def __init__(self):
@@ -21,6 +22,7 @@ class BallDetector(Node):
         cam_rgb.setInterleaved(False)
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
         cam_rgb.setFps(30)
+        cam_rgb.setPreviewSize(416, 416)
 
         # Mono cameras + Stereo depth
         mono_left = self.pipeline.create(dai.node.MonoCamera)
@@ -33,83 +35,60 @@ class BallDetector(Node):
         mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
         stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.ROBOTICS)
+        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)  #Fix depthai alignment warning
         mono_left.out.link(stereo.left)
         mono_right.out.link(stereo.right)
 
         # YOLO Detection Network
         detection_nn = self.pipeline.create(dai.node.YoloSpatialDetectionNetwork)
-        detection_nn.setBlobPath("/home/mikail/yolov8n_coco_416x416.blob")  # Set this to your compiled blob
+        detection_nn.setBlobPath("yolov8n_coco_416x416.blob")
         detection_nn.setConfidenceThreshold(0.5)
         detection_nn.setNumClasses(1)
         detection_nn.setCoordinateSize(4)
         detection_nn.setAnchors([10,14, 23,27, 37,58, 81,82, 135,169, 344,319])
         detection_nn.setAnchorMasks({"side20": [0,1,2], "side10": [3,4,5]})
         detection_nn.setIouThreshold(0.5)
-        detection_nn.input.setBlocking(False)
         detection_nn.setBoundingBoxScaleFactor(0.5)
         detection_nn.setDepthLowerThreshold(100)
         detection_nn.setDepthUpperThreshold(5000)
 
         cam_rgb.preview.link(detection_nn.input)
+        stereo.depth.link(detection_nn.inputDepth)
 
-        xout_rgb = self.pipeline.create(dai.node.XLinkOut)
-        xout_depth = self.pipeline.create(dai.node.XLinkOut)
+        # Outputs
         xout_nn = self.pipeline.create(dai.node.XLinkOut)
-
-        xout_rgb.setStreamName("rgb")
-        xout_depth.setStreamName("depth")
         xout_nn.setStreamName("detections")
-
-        cam_rgb.preview.link(xout_rgb.input)
-        stereo.depth.link(xout_depth.input)
         detection_nn.out.link(xout_nn.input)
 
         self.device = dai.Device(self.pipeline)
-        self.q_rgb = self.device.getOutputQueue(name="rgb", maxSize=4, blocking=False)
-        self.q_depth = self.device.getOutputQueue(name="depth", maxSize=4, blocking=False)
         self.q_detections = self.device.getOutputQueue(name="detections", maxSize=4, blocking=False)
 
         self.timer = self.create_timer(0.1, self.process)
 
     def process(self):
-        in_rgb = self.q_rgb.get()
-        in_depth = self.q_depth.get()
         in_detections = self.q_detections.get()
-
-        frame = in_rgb.getCvFrame()
-        depth_frame = in_depth.getFrame()
-
         detected = Bool()
-        position = Vector3()
+        ball_info = Float32MultiArray()
 
         detections = in_detections.detections
-        if detections:
-            detection = detections[0]
-            x1 = int(detection.xmin * frame.shape[1])
-            y1 = int(detection.ymin * frame.shape[0])
-            x2 = int(detection.xmax * frame.shape[1])
-            y2 = int(detection.ymax * frame.shape[0])
+        for detection in detections:
+            if detection.label == 32:  # COCO class for sports ball
+                detected.data = True
 
-            cx = (x1 + x2) // 2
-            cy = (y1 + y2) // 2
-            cx = np.clip(cx, 0, depth_frame.shape[1] - 1)
-            cy = np.clip(cy, 0, depth_frame.shape[0] - 1)
+                x = detection.spatialCoordinates.x / 1000.0  # in meters
+                z = detection.spatialCoordinates.z / 1000.0
 
-            distance_mm = depth_frame[cy, cx]
-            position.z = distance_mm / 1000.0
+                distance = math.sqrt(x**2 + z**2)
+                angle_deg = math.degrees(math.atan2(x, z))
 
-            image_center_x = frame.shape[1] // 2
-            fov = 68.8
-            position.x = ((cx - image_center_x) / image_center_x) * (fov / 2)
-            position.y = 0.0
-
-            detected.data = True
+                ball_info.data = [distance, angle_deg]
+                break
         else:
             detected.data = False
-            position.x = position.y = position.z = 0.0
+            ball_info.data = [0.0, 0.0]
 
         self.ball_detected_pub.publish(detected)
-        self.ball_position_pub.publish(position)
+        self.ball_position_pub.publish(ball_info)
 
 def main(args=None):
     rclpy.init(args=args)
