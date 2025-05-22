@@ -117,9 +117,9 @@ class NavigationClient(Node):
         # accessible waypoints didn't refresh
         # write command
         goal_msg = NavigateToPose.Goal()
-        goal_msg.pose.header.frame_id = 'map'
-        goal_msg.pose.pose.position.x = float(waypoint[0])
-        goal_msg.pose.pose.position.y = float(waypoint[1])
+        goal_msg.pose.header.frame_id = 'odom'
+        goal_msg.pose.pose.position.x = float(waypoint[0] + self.cartographer.origin[0])
+        goal_msg.pose.pose.position.y = float(waypoint[1] + self.cartographer.origin[1])
         # goal_msg.pose.pose.orientation.w = 1.0
 
         self.get_logger().info(
@@ -147,6 +147,7 @@ class CartographerSubscriber(Node):
         self.accessible_waypoints = np.array([])
         self.sorted_accessible_waypoints = np.array([])
         self.occupancy_value = np.array([])
+        self.origin = np.array([0.0, 0.0])
 
     def occupancy_callback(self, msg):
         """
@@ -162,6 +163,12 @@ class CartographerSubscriber(Node):
         current_map_width = msg.info.width  # get the current map width
         current_map_height = msg.info.height  # get the current map height
         resolution = msg.info.resolution  # get the resolution
+        origin = msg.info.origin.position  # get the origin of the map
+        self.origin = np.array([origin.x, origin.y])  # save the origin in a numpy array
+        # get the map origin in the occupancy grid
+        origin_x = int((origin.x) / resolution)
+        origin_y = int((origin.y) / resolution)
+
 
         # reshape the data so it resembles the map shape
         data = np.reshape(data, (current_map_height, current_map_width))
@@ -173,7 +180,7 @@ class CartographerSubscriber(Node):
         unaccessible_waypoints = np.array([])
         for waypoint in self.waypoints:
             try:
-                occupancy_grid_coordinates = [int((waypoint[1] + 2.3) / resolution), int((waypoint[0] + 2.3) /
+                occupancy_grid_coordinates = [int((waypoint[1]) / resolution), int((waypoint[0]) /
                                                                                          resolution)]
                 conv = self.convolute(data, occupancy_grid_coordinates, size=9)  # perform convolution
 
@@ -229,16 +236,16 @@ class CartographerSubscriber(Node):
         # Draw waypoints
         if self.accessible_waypoints.shape[0] > 0:
             plt.scatter(
-                (self.accessible_waypoints[:, 0] + 2.3) / msg.info.resolution,
-                (self.accessible_waypoints[:, 1] + 2.3) / msg.info.resolution,
+                (self.accessible_waypoints[:, 0]) / msg.info.resolution,
+                (self.accessible_waypoints[:, 1]) / msg.info.resolution,
                 c='green', s=5, label='Accessible'
             )
 
         if unaccessible_waypoints.shape[0] > 0:
             unaccessible_waypoints = unaccessible_waypoints.reshape(-1, 2)
             plt.scatter(
-                (unaccessible_waypoints[:, 0] + 2.3) / msg.info.resolution,
-                (unaccessible_waypoints[:, 1] + 2.3) / msg.info.resolution,
+                (unaccessible_waypoints[:, 0]) / msg.info.resolution,
+                (unaccessible_waypoints[:, 1]) / msg.info.resolution,
                 c='red', s=5, label='Unaccessible'
             )
 
@@ -246,10 +253,17 @@ class CartographerSubscriber(Node):
         if self.sorted_accessible_waypoints.shape[0] > 0:
             nav_goal = self.sorted_accessible_waypoints[0]
             plt.scatter(
-                [(nav_goal[0] + 2.3) / msg.info.resolution],
-                [(nav_goal[1] + 2.3) / msg.info.resolution],
+                [(nav_goal[0]) / msg.info.resolution],
+                [(nav_goal[1]) / msg.info.resolution],
                 marker='*', c='blue', s=100, label='Navigation Goal'
             )
+
+        # Draw origin
+        plt.scatter(
+            [self.origin[0] / msg.info.resolution],
+            [self.origin[1] / msg.info.resolution],
+            marker='o', c='yellow', s=100, label='Origin'
+        )
 
         plt.legend()
         plt.title('Map with Accessible Waypoints and Navigation Goal')
@@ -426,8 +440,8 @@ def main(args=None):
     cmd_vel_publisher = CmdVelPublisher()
     command = Twist()
 
-    #while rclpy.ok():
-    navigation.send_goal()
+    while rclpy.ok():
+        navigation.send_goal()
         #if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
         #navigation.get_logger().info("Ball detected, stopping navigation.")
         #break
