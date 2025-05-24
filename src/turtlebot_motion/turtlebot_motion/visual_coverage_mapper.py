@@ -37,10 +37,49 @@ class VisualCoverageMapper(Node):
         self.get_logger().info('Visual Coverage Mapper Node Initialized.')
 
     def map_callback(self, msg):
-        self.map_info = msg.info
-        self.map = np.array(msg.data, dtype=np.int8).reshape((msg.info.height, msg.info.width))
+        new_map_info = msg.info
+        new_height, new_width = new_map_info.height, new_map_info.width
+        new_origin = new_map_info.origin
+
+        new_map = np.array(msg.data, dtype=np.int8).reshape((new_height, new_width))
+
+        # First time init
         if self.coverage_map is None:
-            self.coverage_map = np.zeros_like(self.map, dtype=np.uint8)
+            self.coverage_map = np.zeros((new_height, new_width), dtype=np.uint8)
+            self.map = new_map
+            self.map_info = new_map_info
+            return
+
+        old_height, old_width = self.map_info.height, self.map_info.width
+        old_origin = self.map_info.origin
+
+        # If size or origin changed → reallocate coverage_map
+        if new_height != old_height or new_width != old_width or new_origin.position.x != old_origin.position.x or new_origin.position.y != old_origin.position.y:
+            new_coverage = np.zeros((new_height, new_width), dtype=np.uint8)
+
+            # Compute offset of old map origin in new map
+            dx = int(round((old_origin.position.x - new_origin.position.x) / new_map_info.resolution))
+            dy = int(round((old_origin.position.y - new_origin.position.y) / new_map_info.resolution))
+
+            # Copy old data into new_coverage
+            y_start = max(0, dy)
+            x_start = max(0, dx)
+            y_end = min(old_height + dy, new_height)
+            x_end = min(old_width + dx, new_width)
+
+            old_y_start = max(0, -dy)
+            old_x_start = max(0, -dx)
+            old_y_end = old_y_start + (y_end - y_start)
+            old_x_end = old_x_start + (x_end - x_start)
+
+            new_coverage[y_start:y_end, x_start:x_end] = self.coverage_map[old_y_start:old_y_end, old_x_start:old_x_end]
+
+            self.coverage_map = new_coverage
+
+        # Save map and info
+        self.map = new_map
+        self.map_info = new_map_info
+
 
     def odom_callback(self, msg):
         if self.map is None or self.coverage_map is None:
