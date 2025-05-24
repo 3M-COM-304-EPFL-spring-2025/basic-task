@@ -129,7 +129,7 @@ class NavigationClient(Node):
         rclpy.spin_once(self.cartographer)
         rclpy.spin_once(self.subscription)    
 
-    def distance(p1, p2):
+    def distance(self,p1, p2):
         return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
 
     def send_goal(self):
@@ -148,7 +148,7 @@ class NavigationClient(Node):
         goal_msg.pose.header.frame_id = 'odom'
         goal_msg.pose.pose.position.x = float(waypoint[0] + self.cartographer.origin[0])
         goal_msg.pose.pose.position.y = float(waypoint[1] + self.cartographer.origin[1])
-        self.last_photo_pose = goal_msg.pose.pose.position  # save the last photo pose
+        self.last_photo_pose = self.get_current_position()  # save the last photo pose
         # goal_msg.pose.pose.orientation.w = 1.0
 
         self.get_logger().info(
@@ -163,10 +163,49 @@ class NavigationClient(Node):
         goal_handle = self._send_goal_future.result()
         get_result_future = goal_handle.get_result_async()
         
-        rclpy.spin_until_future_complete(self, get_result_future)
+        #rclpy.spin_until_future_complete(self, get_result_future)
         position= self.get_current_position()
         if position is not None:
             self.get_logger().info(f'Robot position -> x: {position.x}, y: {position.y}, z: {position.z}')
+               
+        while not get_result_future.done():
+            rclpy.spin_once(self)
+            current_pos = self.get_current_position()
+            if current_pos is None:
+                self.get_logger().info("No odometry data available yet.")
+                continue
+            self.get_logger().info(f'Current goal position -> x: {goal_msg.pose.pose.position.x}, y: {goal_msg.pose.pose.position.y}')
+            self.get_logger().info(f'Distance to goal: {self.distance(current_pos, goal_msg.pose.pose.position):.2f} meters')
+            self.get_logger().info(f'Distance to last photo pose: {self.distance(current_pos, self.last_photo_pose):.2f} meters')
+
+            if current_pos and self.distance(current_pos, self.last_photo_pose) >= 3.0:
+                self.get_logger().info("3 meters passed — taking photo sequence.")
+
+                # Cancel goal
+                self.get_logger().info("Cancelling current goal...")
+                cancel_future = goal_handle.cancel_goal_async()
+                rclpy.spin_until_future_complete(self, cancel_future)
+                cancel_result = cancel_future.result()
+                print(cancel_result)
+                self.get_logger().info("Goal cancelled successfully.")
+
+                spin_detect_ball(self.subscription, CmdVelPublisher(), Twist(), CameraSubscriber(), YOLO("yolov8x.pt"))
+
+                # Resend goal
+                self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+                rclpy.spin_until_future_complete(self, self._send_goal_future)
+                goal_handle = self._send_goal_future.result()
+
+                if not goal_handle.accepted:
+                    self.get_logger().error("Goal was rejected after photo.")
+                    return
+
+                result_future = goal_handle.get_result_async()
+                self.last_photo_pose = current_pos  # reset distance tracking
+
+        print("Goal completed or cancelled.")
+
+
 
 
     def get_current_position(self):
@@ -444,7 +483,7 @@ def reset_commands(command: Twist) -> Twist:
 
 
 
-def spin_detect_ball(self, subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
+def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
     """
     Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
     """
@@ -469,7 +508,7 @@ def spin_detect_ball(self, subscriber : LaserSubscriber, publisher: CmdVelPublis
         start_time = time.time()
         while time.time() - start_time < 2*spin_time_per_step:
             rclpy.spin_once(subscriber)
-            rclpy.spin_once(camera_subscriber)
+            #rclpy.spin_once(camera_subscriber)
 
         # Stop rotation
         command = reset_commands(command)
@@ -479,12 +518,15 @@ def spin_detect_ball(self, subscriber : LaserSubscriber, publisher: CmdVelPublis
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
 
         # Perform YOLO detection
+        """""
         if detect_ball(camera_subscriber, model):
             ball_detected = True
             publisher.get_logger().info("Ball detected!")
             break
         else:
             publisher.get_logger().info("No ball detected.")
+            """
+
 
     command = reset_commands(command)
     publisher.publisher_.publish(command)
