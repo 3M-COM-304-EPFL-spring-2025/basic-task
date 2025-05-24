@@ -182,6 +182,18 @@ class NavigationClient(Node):
             self.get_logger().info("No odometry data available yet.")
             return None
         
+class VisualCoverageSubscriber(Node):
+    def __init__(self):
+        super().__init__('visual_coverage_subscriber')
+        self.subscription = self.create_subscription(OccupancyGrid, 'visual_coverage_map', self.listener_callback, 10)
+        self.coverage_map = None
+        self.map_info = None
+        self.subscription  # prevent unused variable warning
+
+    def listener_callback(self, msg):
+        self.coverage_map = np.array(msg.data).reshape((msg.info.height, msg.info.width))
+        self.map_info = msg.info
+        self.get_logger().info('Received visual coverage map.')        
 
 
 class CartographerSubscriber(Node):
@@ -194,6 +206,9 @@ class CartographerSubscriber(Node):
         self.sorted_accessible_waypoints = np.array([])
         self.occupancy_value = np.array([])
         self.origin = np.array([0.0, 0.0])
+        self.visual_node = VisualCoverageSubscriber()  # a visual coverage subscriber is created to access the visual coverage map
+        rclpy.spin_once(self.visual_node)  # refresh the visual coverage map
+
 
     def occupancy_callback(self, msg):
         """
@@ -228,13 +243,13 @@ class CartographerSubscriber(Node):
             try:
                 occupancy_grid_coordinates = [int((waypoint[1]) / resolution), int((waypoint[0]) /
                                                                                          resolution)]
-                conv = self.convolute(data, occupancy_grid_coordinates, size=9)  # perform convolution
+                accessible, score = self.convolute(data, self.visual_node.coverage_map, occupancy_grid_coordinates, size=5, occ_threshold=40)  # perform convolution
 
                 # if the convolution returns True, it means the WP is accessible, so it is stored in
                 # self.accessible_waypoints
-                if conv[0]:
+                if accessible:
                     self.accessible_waypoints = np.append(self.accessible_waypoints, waypoint)
-                    self.occupancy_value = np.append(self.occupancy_value, conv[1])
+                    self.occupancy_value = np.append(self.occupancy_value, score)  # store the score of the WP
                 else:
                     # if the convolution returns False, it means the WP is not accessible, so it is stored in
                     # self.unaccessible_waypoints
@@ -321,40 +336,36 @@ class CartographerSubscriber(Node):
         plt.clf()
 
     @staticmethod
-    def convolute(data, coordinates, size=3, threshold=40):
-        """
-        This function calculates the average occupancy probability at 'coordinates' for an area of size (size x size)
-        around said point.
+    def convolute(data, coverage_map, coordinates, size=3, occ_threshold=40, coverage_weight=0.5):
 
-        :param data: Occupancy Grid Data (shaped to (x, y) map dimensions)
-        :param coordinates: the coordinates of the OccupancyGrid to convolute around
-        :param size: size of the kernel
-        :param threshold: threshold of accessibility
-        :return: True or False, depending on whether the waypoint is accessible or not.
-        :return: average: average occupancy probability of the convolution
         """
-        sum = 0
-        for x in range(int( coordinates[0] - size / 2), int(coordinates[0] + size / 2)):
+        Performs a convolution operation on the occupancy grid data to determine if a waypoint is accessible.
+        """
+        occ_sum = 0
+        coverage_sum = 0
+
+        for x in range(int(coordinates[0] - size / 2), int(coordinates[0] + size / 2)):
             for y in range(int(coordinates[1] - size / 2), int(coordinates[1] + size / 2)):
-                # if the area is unknown, we add 100 to sum.
                 if data[x, y] == -1:
-                    sum += 100
-                # if occupancy state is above 50 (occupied), we add 1M to the sum so that the robot DOES NOT
-                # access areas near walls.
+                    occ_sum += 100  # unknown area
                 elif data[x, y] > 50:
-                    sum += 1000000
-                # if the occupancy state is below 50 and known, just add the value to sum.
+                    occ_sum += 1000000  # obstacle
                 else:
-                    sum += data[x, y]
+                    occ_sum += data[x, y]
 
-        # average value for the square is computed
-        average = sum / (size * size)
-        if average < threshold:
-            # if the average of the squares is below the threshold, the waypoint is accessible
-            return True, average
+                # encourage going to unseen places (0 = unseen, 1 = seen)
+                coverage_sum += 1 - coverage_map[x, y]  # high if unseen
+
+        area = size * size
+        occ_avg = occ_sum / area
+        coverage_avg = coverage_sum / area  # 0 if fully seen, 1 if fully unseen
+
+        if occ_avg < occ_threshold:
+            score = (1 - coverage_weight) * occ_avg + coverage_weight * (100 * coverage_avg)
+            return True, score
         else:
-            # if the average is above the threshold, the waypoint has either too many unknowns, or an obstacle
-            return False, average
+            return False, float('inf')
+
 
     def generate_list_of_waypoints(self, n_of_waypoints, step):
         """
