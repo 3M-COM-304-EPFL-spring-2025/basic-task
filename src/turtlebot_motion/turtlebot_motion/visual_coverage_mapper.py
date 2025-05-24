@@ -9,6 +9,7 @@ from std_msgs.msg import Header
 import numpy as np
 import tf_transformations
 import math
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 class VisualCoverageMapper(Node):
     def __init__(self):
@@ -31,7 +32,10 @@ class VisualCoverageMapper(Node):
         self.coverage_map = None
 
         self.map_sub = self.create_subscription(OccupancyGrid, '/map', self.map_callback, 10)
-        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
+
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.odom_sub = self.create_subscription(Odometry, '/odom', self.odom_callback, qos_profile)
         self.coverage_pub = self.create_publisher(OccupancyGrid, '/visual_coverage_map', 10)
 
         self.get_logger().info('Visual Coverage Mapper Node Initialized.')
@@ -146,7 +150,11 @@ class VisualCoverageMapper(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "map"
         msg.info = self.map_info
-        msg.data = list(self.coverage_map.flatten() * 100)
+        data = list(self.coverage_map.flatten() * 100)
+        # convert to int8
+        data = [int(x) for x in data]
+        msg.data = data
+        print("GJFFKVEF")
         self.coverage_pub.publish(msg)
 
 

@@ -27,6 +27,9 @@ from rclpy.action import ActionServer, CancelResponse
 from rclpy.action import ActionClient
 from rcl_interfaces.msg import ParameterType
 from action_msgs.msg import GoalStatus
+from nav_msgs.msg import Odometry
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+
 
 # messages
 from std_msgs.msg import Float32
@@ -71,7 +74,23 @@ class LaserSubscriber(Node):
 class CmdVelPublisher(Node):
     def __init__(self):
         super().__init__('cmd_vel_publisher')
-        self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)       
+        self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)   
+
+class OdomSubscriber(Node):
+    def __init__(self):
+        super().__init__('odom_subscriber')
+        qos_profile = QoSProfile(depth=10)
+        qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
+        self.subscription = self.create_subscription(Odometry, 'odom', self.listener_callback, qos_profile)
+        self.odom_buffer = []
+        self.current_position=None
+        self.subscription  # prevent unused variable warning
+
+    def listener_callback(self, msg):
+        self.odom_buffer.append(msg)
+        if len(self.odom_buffer) > 10:
+            self.odom_buffer.pop(0)  # Keep only the last 10 odometry messages   
+        self.current_position=msg.pose.pose.position            
 
 
 
@@ -81,7 +100,12 @@ class NavigationClient(Node):
         self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
         self.cartographer = CartographerSubscriber()  # a cartographer subscription is created to access the occupancy
         rclpy.spin_once(self.cartographer)
+        self.subscription = OdomSubscriber()  # a subscription to the odometry is created to access the robot position
+        rclpy.spin_once(self.subscription)
+        self.last_photo_pose = None  # this variable is used to store the last photo pose
         # grid and determine which positions to navigate to
+ # prevent unused variable warning
+
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
@@ -103,6 +127,10 @@ class NavigationClient(Node):
             self.get_logger().info('Goal failed with status: {0}'.format(status))
 
         rclpy.spin_once(self.cartographer)
+        rclpy.spin_once(self.subscription)    
+
+    def distance(p1, p2):
+        return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
 
     def send_goal(self):
 
@@ -120,6 +148,7 @@ class NavigationClient(Node):
         goal_msg.pose.header.frame_id = 'odom'
         goal_msg.pose.pose.position.x = float(waypoint[0] + self.cartographer.origin[0])
         goal_msg.pose.pose.position.y = float(waypoint[1] + self.cartographer.origin[1])
+        self.last_photo_pose = goal_msg.pose.pose.position  # save the last photo pose
         # goal_msg.pose.pose.orientation.w = 1.0
 
         self.get_logger().info(
@@ -133,9 +162,26 @@ class NavigationClient(Node):
 
         goal_handle = self._send_goal_future.result()
         get_result_future = goal_handle.get_result_async()
-
+        
         rclpy.spin_until_future_complete(self, get_result_future)
-        return False
+        position= self.get_current_position()
+        if position is not None:
+            self.get_logger().info(f'Robot position -> x: {position.x}, y: {position.y}, z: {position.z}')
+
+
+    def get_current_position(self):
+        """
+        This function gets the current position of the robot in the map.
+        :return: current position of the robot in the map
+        """
+        rclpy.spin_once(self.subscription)
+        position = self.subscription.current_position
+        if position is not None:
+            return position
+        else:
+            self.get_logger().info("No odometry data available yet.")
+            return None
+        
 
 
 class CartographerSubscriber(Node):
@@ -342,6 +388,7 @@ class CameraSubscriber(Node):
         self.bridge = CvBridge()
         print("Next")
         self.current_frame = None
+        self.last_photo_pose = None
 
     def listener_callback(self, msg):
         try:
@@ -383,7 +430,10 @@ def reset_commands(command: Twist) -> Twist:
     command.angular.z = 0.0
     return command 
 
-def spin_detect_ball(subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
+
+
+
+def spin_detect_ball(self, subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
     """
     Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
     """
@@ -442,9 +492,9 @@ def main(args=None):
 
     while rclpy.ok():
         navigation.send_goal()
-        #if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
-        #navigation.get_logger().info("Ball detected, stopping navigation.")
-        #break
+        if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
+            navigation.get_logger().info("Ball detected, stopping navigation.")
+            break
 
     navigation.destroy_node()
     laser_subscriber.destroy_node()
