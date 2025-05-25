@@ -71,6 +71,8 @@ class LaserSubscriber(Node):
         print(f"Left: {self.left_distance:.2f}, Forward: {self.forward_distance:.2f}, Right: {self.right_distance:.2f}, Back: {self.back_distance:.2f}")
         print(f"Closest obstacle distance: {self.closest_obstacle_distance:.2f}")
 
+
+
 class CmdVelPublisher(Node):
     def __init__(self):
         super().__init__('cmd_vel_publisher')
@@ -132,7 +134,7 @@ class NavigationClient(Node):
     def distance(self,p1, p2):
         return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
 
-    def send_goal(self):
+    def send_goal(self, ball_position_subscriber):
 
 
         self.get_logger().info('Waiting for action server...')
@@ -170,6 +172,7 @@ class NavigationClient(Node):
                
         while not get_result_future.done():
             rclpy.spin_once(self)
+            rclpy.spin_once(ball_position_subscriber)
             current_pos = self.get_current_position()
             if current_pos is None:
                 self.get_logger().info("No odometry data available yet.")
@@ -513,7 +516,10 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
         # Stop rotation
         command = reset_commands(command)
         publisher.publisher_.publish(command)
-        time.sleep(2)  # short pause for stability
+        current_time = time.time()
+        while time.time() - current_time < 4:  # short pause for stability
+            rclpy.spin_once(subscriber)
+            rclpy.spin_once(camera_subscriber)
 
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
 
@@ -534,24 +540,81 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
 
     return ball_detected
 
+class BallPositionSubscriber(Node):
+    def __init__(self):
+        super().__init__('ball_position_subscriber')
+        self.subscription = self.create_subscription(
+            Float32,  # Remplacez par le type de message exact si ce n'est pas Float32
+            'ball_position',
+            self.listener_callback,
+            10
+        )
+        self.ball_position = None
+        self.subscription  # prevent unused variable warning
+
+    def listener_callback(self, msg):
+        if self.ball_position is None and msg.data.x != 0.0 and msg.data.y != 0.0:
+            self.ball_position = (msg.data.x, msg.data.y)
+            self.get_logger().info(f"Initial ball position set: {self.ball_position}")
+        else:
+            self.get_logger().info(f"Received new ball position: {msg.data.x}, {msg.data.y}")
+        self.get_logger().info(f"Ball position received: {self.ball_position}")
+
 def main(args=None):
     rclpy.init(args=args)
 
-    navigation=NavigationClient()
+    navigation = NavigationClient()
     laser_subscriber = LaserSubscriber()
     camera_subscriber = CameraSubscriber()
     cmd_vel_publisher = CmdVelPublisher()
+    ball_position_subscriber = BallPositionSubscriber()  # Nouvelle instance
     command = Twist()
 
     while rclpy.ok():
-        navigation.send_goal()
+        navigation.send_goal(ball_position_subscriber)
+        rclpy.spin_once(ball_position_subscriber)
         if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
             navigation.get_logger().info("Ball detected, stopping navigation.")
             break
+        if ball_position_subscriber.ball_position is not None:
+            navigation.get_logger().info(f"Ball position: {ball_position_subscriber.ball_position}")
+            # navigate to the ball position
+            goal_msg = NavigateToPose.Goal()
+            goal_msg.pose.header.frame_id = 'odom'
+            goal_msg.pose.pose.position.x = ball_position_subscriber.ball_position[0]
+            goal_msg.pose.pose.position.y = ball_position_subscriber.ball_position[1]
+            goal_msg.pose.pose.orientation.w = 1.0  # Assuming no specific orientation is required
+
+            navigation.get_logger().info(
+                f"Sending navigation goal to ball position x: {goal_msg.pose.pose.position.x}, y: {goal_msg.pose.pose.position.y}"
+            )
+
+            navigation._send_goal_future = navigation._action_client.send_goal_async(goal_msg)
+            rclpy.spin_until_future_complete(navigation, navigation._send_goal_future)
+
+            goal_handle = navigation._send_goal_future.result()
+            if not goal_handle.accepted:
+                navigation.get_logger().error("Goal to ball position was rejected.")
+                continue
+
+            navigation.get_logger().info("Goal to ball position accepted.")
+            result_future = goal_handle.get_result_async()
+            rclpy.spin_until_future_complete(navigation, result_future)
+
+            if result_future.result().status == GoalStatus.STATUS_SUCCEEDED:
+                navigation.get_logger().info("Arrived at ball position.")
+            else:
+                navigation.get_logger().info("Failed to reach ball position.")
+        else:
+            navigation.get_logger().info("No ball position received yet, continuing navigation...")
+            
+
+          # Vérifie les mises à jour de la position de la balle
 
     navigation.destroy_node()
     laser_subscriber.destroy_node()
     camera_subscriber.destroy_node()
+    ball_position_subscriber.destroy_node()  # Détruire le nouveau subscriber
     rclpy.shutdown()
     
 
