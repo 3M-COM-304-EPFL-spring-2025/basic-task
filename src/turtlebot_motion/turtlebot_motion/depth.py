@@ -1,7 +1,7 @@
 from rclpy.node import Node
 from std_msgs.msg import Bool
 from std_msgs.msg import Float32MultiArray
-from geometry_msgs.msg import Vector3
+#from geometry_msgs.msg import Vector3
 import rclpy
 import depthai as dai
 import math
@@ -11,7 +11,7 @@ class BallDetector(Node):
         super().__init__('ball_detector_node')
 
         self.ball_detected_pub = self.create_publisher(Bool, '/ball_detected', 10)
-        self.ball_position_pub = self.create_publisher(Vector3, '/ball_position', 10)
+        self.ball_position_pub = self.create_publisher(Float32MultiArray, '/ball_position', 10)
 
         self.pipeline = dai.Pipeline()
 
@@ -35,7 +35,7 @@ class BallDetector(Node):
         mono_right.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
 
         stereo.setDefaultProfilePreset(dai.node.StereoDepth.PresetMode.ROBOTICS)
-        stereo.setDepthAlign(dai.CameraBoardSocket.RGB)  #Fix depthai alignment warning
+        stereo.setDepthAlign(dai.CameraBoardSocket.CAM_A)  #Fix depthai alignment warning
         mono_left.out.link(stereo.left)
         mono_right.out.link(stereo.right)
 
@@ -61,9 +61,9 @@ class BallDetector(Node):
         detection_nn.out.link(xout_nn.input)
 
         self.device = dai.Device(self.pipeline)
-        self.q_detections = self.device.getOutputQueue(name="detections", maxSize=4, blocking=False)
+        self.q_detections = self.device.getOutputQueue(name="detections", maxSize=3, blocking=False)
 
-        self.timer = self.create_timer(0.1, self.process)
+        self.timer = self.create_timer(1, self.process)
 
     def process(self):
         in_detections = self.q_detections.get()
@@ -72,14 +72,14 @@ class BallDetector(Node):
 
         detections = in_detections.detections
         for detection in detections:
-            if detection.label == 32:  # COCO class for sports ball
+            if detection.label == 32:  # COCO class for sports ball, frisbee, and orange. YOLO detects our red ball as either of those.
                 detected.data = True
 
                 x = detection.spatialCoordinates.x / 1000.0  # in meters
                 z = detection.spatialCoordinates.z / 1000.0
 
                 distance = math.sqrt(x**2 + z**2)
-                angle_deg = math.degrees(math.atan2(x, z))
+                angle_deg = math.degrees(math.atan2(x, z)) + 90
 
                 ball_info.data = [distance, angle_deg]
                 break
@@ -93,7 +93,11 @@ class BallDetector(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = BallDetector()
-    rclpy.spin(node)
+    while True:
+        try:
+            rclpy.spin(node)
+        except KeyboardInterrupt:
+            break
     node.destroy_node()
     rclpy.shutdown()
 
