@@ -4,7 +4,10 @@ from std_msgs.msg import Float32MultiArray
 #from geometry_msgs.msg import Vector3
 import rclpy
 import depthai as dai
+dai.LogLevel.DEBUG
+dai.LogOutputLevel.CONSOLE
 import math
+import tf_transformations
 
 class BallDetector(Node):
     def __init__(self):
@@ -21,7 +24,7 @@ class BallDetector(Node):
         cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_1080_P)
         cam_rgb.setInterleaved(False)
         cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
-        cam_rgb.setFps(30)
+        cam_rgb.setFps(5)
         cam_rgb.setPreviewSize(416, 416)
 
         # Mono cameras + Stereo depth
@@ -61,27 +64,44 @@ class BallDetector(Node):
         detection_nn.out.link(xout_nn.input)
 
         self.device = dai.Device(self.pipeline)
-        self.q_detections = self.device.getOutputQueue(name="detections", maxSize=3, blocking=False)
+        self.q_detections = self.device.getOutputQueue(name="detections", maxSize=1, blocking=True)
 
         self.timer = self.create_timer(1, self.process)
 
     def process(self):
+        current_odom = self.latest_odom
+        if not self.q_detections.has():
+            print("No detections available.")
+            return
+
         in_detections = self.q_detections.get()
         detected = Bool()
         ball_info = Float32MultiArray()
 
-        detections = in_detections.detections
-        for detection in detections:
-            if detection.label == 32:  # COCO class for sports ball, frisbee, and orange. YOLO detects our red ball as either of those.
+        list_of_labels = [39]  # Example: baseball, sports ball, etc.
+
+        for detection in in_detections.detections:
+            if detection.label in list_of_labels:
                 detected.data = True
 
-                x = detection.spatialCoordinates.x / 1000.0  # in meters
+                x = detection.spatialCoordinates.x / 1000.0
                 z = detection.spatialCoordinates.z / 1000.0
 
                 distance = math.sqrt(x**2 + z**2)
-                angle_deg = math.degrees(math.atan2(x, z)) + 90
+                angle_rad = math.atan2(x, z)
 
-                ball_info.data = [distance, angle_deg]
+                if current_odom is not None:
+                    robot_x = current_odom.pose.pose.position.x
+                    robot_y = current_odom.pose.pose.position.y
+                    q = current_odom.pose.pose.orientation
+                    _, _, robot_yaw = tf_transformations.euler_from_quaternion([q.x, q.y, q.z, q.w])
+                    ball_x = robot_x + distance * math.cos(robot_yaw + angle_rad)
+                    ball_y = robot_y + distance * math.sin(robot_yaw + angle_rad)
+                else:
+                    ball_x = 0.0
+                    ball_y = 0.0
+
+                ball_info.data = [ball_x, ball_y]
                 break
         else:
             detected.data = False
@@ -89,6 +109,7 @@ class BallDetector(Node):
 
         self.ball_detected_pub.publish(detected)
         self.ball_position_pub.publish(ball_info)
+
 
 def main(args=None):
     rclpy.init(args=args)
