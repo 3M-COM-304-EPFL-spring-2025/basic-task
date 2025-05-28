@@ -32,7 +32,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 
 # messages
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32MultiArray
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import MapMetaData
 from nav2_msgs.action import NavigateToPose
@@ -135,8 +135,6 @@ class NavigationClient(Node):
         return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
 
     def send_goal(self, ball_position_subscriber):
-
-
         self.get_logger().info('Waiting for action server...')
         self._action_client.wait_for_server()
 
@@ -173,6 +171,9 @@ class NavigationClient(Node):
         while not get_result_future.done():
             rclpy.spin_once(self)
             rclpy.spin_once(ball_position_subscriber)
+            if ball_position_subscriber.ball_position is not None:
+                print("Ball position detected, stopping navigation.")
+                return
             current_pos = self.get_current_position()
             if current_pos is None:
                 self.get_logger().info("No odometry data available yet.")
@@ -486,7 +487,7 @@ def reset_commands(command: Twist) -> Twist:
 
 
 
-def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber:CameraSubscriber, model:YOLO):
+def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber, model:YOLO):
     """
     Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
     """
@@ -509,17 +510,29 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
 
         # Wait exactly the needed time
         start_time = time.time()
+        print(f"Rotating for {spin_time_per_step:.2f} seconds...")
         while time.time() - start_time < 2*spin_time_per_step:
-            rclpy.spin_once(subscriber)
+            #print(f"Rotating... {time.time() - start_time:.2f} seconds elapsed")
+            #rclpy.spin_once(subscriber)
+            #print("Checking for obstacles...")
             #rclpy.spin_once(camera_subscriber)
+            pass
 
         # Stop rotation
         command = reset_commands(command)
         publisher.publisher_.publish(command)
         current_time = time.time()
-        while time.time() - current_time < 4:  # short pause for stability
-            rclpy.spin_once(subscriber)
-            rclpy.spin_once(camera_subscriber)
+        print("Waiting for 4 seconds to stabilize...")
+        #rclpy.spin_once(camera_subscriber)
+        time.sleep(4)  # Wait for 4 seconds to stabilize
+            #rclpy.spin_once(subscriber)
+        #rclpy.spin_once(camera_subscriber)
+        """
+        if camera_subscriber.ball_position is not None:
+            publisher.get_logger().info(f"Ball position detected: {camera_subscriber.ball_position}")
+            ball_detected = True
+            break
+        """
 
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
 
@@ -544,7 +557,7 @@ class BallPositionSubscriber(Node):
     def __init__(self):
         super().__init__('ball_position_subscriber')
         self.subscription = self.create_subscription(
-            Float32,  # Remplacez par le type de message exact si ce n'est pas Float32
+            Float32MultiArray,
             'ball_position',
             self.listener_callback,
             10
@@ -553,16 +566,17 @@ class BallPositionSubscriber(Node):
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
-        if self.ball_position is None and msg.data.x != 0.0 and msg.data.y != 0.0:
-            self.ball_position = (msg.data.x, msg.data.y)
+        if self.ball_position is None and msg.data[0] != 0.0 and msg.data[1] != 0.0:
+            self.ball_position = (msg.data[0], msg.data[1])
             self.get_logger().info(f"Initial ball position set: {self.ball_position}")
         else:
-            self.get_logger().info(f"Received new ball position: {msg.data.x}, {msg.data.y}")
+            self.get_logger().info(f"Received new ball position: {msg.data[0]}, {msg.data[1]}")
         self.get_logger().info(f"Ball position received: {self.ball_position}")
 
 def main(args=None):
     rclpy.init(args=args)
 
+    print("Starting the navigation client...")
     navigation = NavigationClient()
     laser_subscriber = LaserSubscriber()
     camera_subscriber = CameraSubscriber()
@@ -570,12 +584,21 @@ def main(args=None):
     ball_position_subscriber = BallPositionSubscriber()  # Nouvelle instance
     command = Twist()
 
+    print("Navigation client started.")
+    print("Will spin the subscription to the laser scanner and camera...")
+    rclpy.spin_once(laser_subscriber)
+    #rclpy.spin_once(camera_subscriber)
+    print("Laser scanner and camera subscriptions spun once.")
+    print("Will spin the ball position subscriber...")
+    rclpy.spin_once(ball_position_subscriber)  # Spin the ball position subscriber once to initialize it
+    print("Ball position subscriber spun once.")
+    print("Starting the navigation loop...")
+
     while rclpy.ok():
         navigation.send_goal(ball_position_subscriber)
         rclpy.spin_once(ball_position_subscriber)
-        if spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, camera_subscriber, YOLO("yolov8x.pt")):
+        if ball_position_subscriber.ball_position is None and spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, ball_position_subscriber, YOLO("yolov8x.pt")):
             navigation.get_logger().info("Ball detected, stopping navigation.")
-            break
         if ball_position_subscriber.ball_position is not None:
             navigation.get_logger().info(f"Ball position: {ball_position_subscriber.ball_position}")
             # navigate to the ball position
@@ -603,6 +626,7 @@ def main(args=None):
 
             if result_future.result().status == GoalStatus.STATUS_SUCCEEDED:
                 navigation.get_logger().info("Arrived at ball position.")
+                break
             else:
                 navigation.get_logger().info("Failed to reach ball position.")
         else:
@@ -610,6 +634,7 @@ def main(args=None):
             
 
           # Vérifie les mises à jour de la position de la balle
+    print("Navigation loop finished.")
 
     navigation.destroy_node()
     laser_subscriber.destroy_node()
