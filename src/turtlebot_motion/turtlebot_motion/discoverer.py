@@ -134,11 +134,11 @@ class NavigationClient(Node):
     def distance(self,p1, p2):
         return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
 
-    def send_goal(self, ball_position_subscriber):
+    def send_goal(self, ball_position_subscriber, cmd_vel_publisher, command=Twist()):
         self.get_logger().info('Waiting for action server...')
         self._action_client.wait_for_server()
 
-        rclpy.spin_once(self.cartographer)  # refresh the list of accessible waypoints
+        #rclpy.spin_once(self.cartographer)  # refresh the list of accessible waypoints
         waypoint = self.cartographer.sorted_accessible_waypoints[0]  # grab the first waypoint
         self.cartographer.sorted_accessible_waypoints = self.cartographer.sorted_accessible_waypoints[1:]  # pop the
         # first element from the list, in case the
@@ -173,7 +173,7 @@ class NavigationClient(Node):
             rclpy.spin_once(ball_position_subscriber)
             if ball_position_subscriber.ball_position is not None:
                 print("Ball position detected, stopping navigation.")
-                return
+                break
             current_pos = self.get_current_position()
             if current_pos is None:
                 self.get_logger().info("No odometry data available yet.")
@@ -193,8 +193,7 @@ class NavigationClient(Node):
                 print(cancel_result)
                 self.get_logger().info("Goal cancelled successfully.")
 
-                spin_detect_ball(self.subscription, CmdVelPublisher(), Twist(), CameraSubscriber(), YOLO("yolov8x.pt"))
-
+                spin_detect_ball(self.subscription, cmd_vel_publisher, command, ball_position_subscriber)
                 # Resend goal
                 self._send_goal_future = self._action_client.send_goal_async(goal_msg)
                 rclpy.spin_until_future_complete(self, self._send_goal_future)
@@ -207,10 +206,8 @@ class NavigationClient(Node):
                 result_future = goal_handle.get_result_async()
                 self.last_photo_pose = current_pos  # reset distance tracking
 
+        rclpy.spin_once(self.cartographer)
         print("Goal completed or cancelled.")
-
-
-
 
     def get_current_position(self):
         """
@@ -252,7 +249,6 @@ class CartographerSubscriber(Node):
         self.visual_node = VisualCoverageSubscriber()  # a visual coverage subscriber is created to access the visual coverage map
         rclpy.spin_once(self.visual_node)  # refresh the visual coverage map
 
-
     def occupancy_callback(self, msg):
         """
 
@@ -265,7 +261,10 @@ class CartographerSubscriber(Node):
 
         data = np.array(msg.data)  # download the occupancy grid
         current_map_width = msg.info.width  # get the current map width
+        self.get_logger().info(f"Current map width: {current_map_width}")
         current_map_height = msg.info.height  # get the current map height
+        self.get_logger().info(f"Current map height: {current_map_height}")
+
         resolution = msg.info.resolution  # get the resolution
         origin = msg.info.origin.position  # get the origin of the map
         self.origin = np.array([origin.x, origin.y])  # save the origin in a numpy array
@@ -276,6 +275,12 @@ class CartographerSubscriber(Node):
 
         # reshape the data so it resembles the map shape
         data = np.reshape(data, (current_map_height, current_map_width))
+        self.waypoints = self.generate_waypoints_from_map(current_map_width, current_map_height, resolution)
+        waypoints_height= max(self.waypoints[:,0])
+        waypoints_width=max(self.waypoints[:,1])
+        self.get_logger().info(f"Waypoints height: {waypoints_height}, Waypoints width: {waypoints_width}")
+    
+        
 
         # Here we go through every waypoint and save the ones that are accessible.
         # An accessible waypoint is one which has no obstacles, and has few or no unknown squares in the vicinity.
@@ -286,6 +291,8 @@ class CartographerSubscriber(Node):
             try:
                 occupancy_grid_coordinates = [int((waypoint[1]) / resolution), int((waypoint[0]) /
                                                                                          resolution)]
+
+
                 accessible, score = self.convolute(data, self.visual_node.coverage_map, occupancy_grid_coordinates, size=5, occ_threshold=40)  # perform convolution
 
                 # if the convolution returns True, it means the WP is accessible, so it is stored in
@@ -303,22 +310,10 @@ class CartographerSubscriber(Node):
                 pass
 
             # scatter the accessible and unaccessible waypoints in the map with different colors
-            """
-            plt.scatter(self.accessible_waypoints[:, 0], self.accessible_waypoints[:, 1], c='green', s=1)
-            plt.scatter(unaccessible_waypoints[:, 0], unaccessible_waypoints[:, 1], c='red', s=1)
-            plt.xlim(0, 2.3)
-            plt.ylim(0, 2.3)
-            plt.title('Accessible waypoints')
-            plt.xlabel('X axis')
-            plt.ylabel('Y axis')
-            plt.grid()
-            plt.pause(0.01)  # Pause to update the plot
-            plt.clf()  # Clear the plot for the next iteration
-            plt.show()  # Show the plot
-            """
+            
 
         # reshape the accessible waypoints array to shape (n, 2)
-        self.accessible_waypoints = self.accessible_waypoints.reshape((-1, 2))
+        self.accessible_waypoints = self.accessible_waypoints.reshape(-1, 2)
 
         # Sorting...
         occupancy_value_idxs = self.occupancy_value.argsort()
@@ -433,47 +428,29 @@ class CartographerSubscriber(Node):
 
         return waypoints
     
-class CameraSubscriber(Node):
-    def __init__(self):
-        print("Hi")
-        super().__init__('camera_subscriber')
-        self.subscription = self.create_subscription(Image, '/oakd/rgb/preview/image_raw', self.listener_callback, 10)
-        print("Okay")
-        self.bridge = CvBridge()
-        print("Next")
-        self.current_frame = None
-        self.last_photo_pose = None
+    def generate_waypoints_from_map(self, map_width, map_height, resolution, step=0.2):
+        """
+        Generate waypoints that span the full map area based on its current size, origin, and resolution.
+        :param map_width: Width of the map in cells
+        :param map_height: Height of the map in cells
+        :param resolution: Size of one cell in meters
+        :param origin: [x, y] origin of the map in world coordinates
+        :param step: Distance between waypoints in meters
+        :return: np.ndarray of waypoints in (x, y) format
+        """
+        x_min = 0
+        y_min = 0
+        x_max = x_min + map_width * resolution
+        y_max = y_min + map_height * resolution
 
-    def listener_callback(self, msg):
-        try:
-            self.current_frame = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
-            cv2.imshow("Camera Feed", self.current_frame)
-            cv2.waitKey(1)
-        except Exception as e:
-            self.get_logger().error(f"Could not convert image: {e}")   
-    
+        x_coords = np.arange(x_min, x_max, step)
+        y_coords = np.arange(y_min, y_max, step)
 
-def detect_ball(camera_subscriber: CameraSubscriber, model: YOLO) -> bool:
-    """Detects ball using YOLO model."""
-    rclpy.spin_once(camera_subscriber)
+        waypoints = np.array([[x, y] for x in x_coords for y in y_coords])
 
-    if camera_subscriber.current_frame is None:
-        camera_subscriber.get_logger().info("No image received yet.")
-        return False
+        return waypoints
 
-    frame = camera_subscriber.current_frame
-    results = model(frame)
-
-    for box in results[0].boxes:
-        class_id = int(box.cls)
-        annotated_frame = results[0].plot()
-        cv2.imshow("Annotated Frame", annotated_frame)
-        cv2.waitKey(1)
-
-        if class_id == 24:  # Adjust according to your ball class ID
-            return True
-
-    return False          
+      
 def reset_commands(command: Twist) -> Twist:
     """Resets all Twist commands to zero."""
     command.linear.x = 0.0
@@ -485,9 +462,7 @@ def reset_commands(command: Twist) -> Twist:
     return command 
 
 
-
-
-def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber, model:YOLO):
+def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber):
     """
     Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
     """
@@ -522,17 +497,17 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
         command = reset_commands(command)
         publisher.publisher_.publish(command)
         current_time = time.time()
-        print("Waiting for 4 seconds to stabilize...")
+        print("Waiting for 1 seconds to stabilize...")
         #rclpy.spin_once(camera_subscriber)
-        time.sleep(4)  # Wait for 4 seconds to stabilize
+        time.sleep(1)  # Wait for 4 seconds to stabilize
             #rclpy.spin_once(subscriber)
         #rclpy.spin_once(camera_subscriber)
-        """
+        
         if camera_subscriber.ball_position is not None:
             publisher.get_logger().info(f"Ball position detected: {camera_subscriber.ball_position}")
             ball_detected = True
             break
-        """
+        
 
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
 
@@ -566,7 +541,7 @@ class BallPositionSubscriber(Node):
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
-        if self.ball_position is None and msg.data[0] != 0.0 and msg.data[1] != 0.0:
+        if msg.data[0] != 0.0 and msg.data[1] != 0.0:
             self.ball_position = (msg.data[0], msg.data[1])
             self.get_logger().info(f"Initial ball position set: {self.ball_position}")
         else:
@@ -579,14 +554,14 @@ def main(args=None):
     print("Starting the navigation client...")
     navigation = NavigationClient()
     laser_subscriber = LaserSubscriber()
-    camera_subscriber = CameraSubscriber()
+    #camera_subscriber = CameraSubscriber()
     cmd_vel_publisher = CmdVelPublisher()
     ball_position_subscriber = BallPositionSubscriber()  # Nouvelle instance
     command = Twist()
 
     print("Navigation client started.")
     print("Will spin the subscription to the laser scanner and camera...")
-    rclpy.spin_once(laser_subscriber)
+    #rclpy.spin_once(laser_subscriber)
     #rclpy.spin_once(camera_subscriber)
     print("Laser scanner and camera subscriptions spun once.")
     print("Will spin the ball position subscriber...")
@@ -595,9 +570,9 @@ def main(args=None):
     print("Starting the navigation loop...")
 
     while rclpy.ok():
-        navigation.send_goal(ball_position_subscriber)
+        navigation.send_goal(ball_position_subscriber, cmd_vel_publisher, command)
         rclpy.spin_once(ball_position_subscriber)
-        if ball_position_subscriber.ball_position is None and spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, ball_position_subscriber, YOLO("yolov8x.pt")):
+        if ball_position_subscriber.ball_position is None and spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, ball_position_subscriber):
             navigation.get_logger().info("Ball detected, stopping navigation.")
         if ball_position_subscriber.ball_position is not None:
             navigation.get_logger().info(f"Ball position: {ball_position_subscriber.ball_position}")
@@ -638,7 +613,6 @@ def main(args=None):
 
     navigation.destroy_node()
     laser_subscriber.destroy_node()
-    camera_subscriber.destroy_node()
     ball_position_subscriber.destroy_node()  # Détruire le nouveau subscriber
     rclpy.shutdown()
     
