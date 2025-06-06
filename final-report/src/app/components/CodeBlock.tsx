@@ -1,36 +1,34 @@
 "use client";
 // components/CodeBlock.tsx
-import React, { useState } from "react";
-import SyntaxHighlighter from "react-syntax-highlighter";
-import { ExternalLink, ChevronDown, ChevronRight } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
 
 interface CodeBlockProps {
   code: string;
-  language?: string;
   title?: string;
   githubUrl?: string;
 }
 
 const CodeBlock: React.FC<CodeBlockProps> = ({
   code,
-  language = "python",
-  title,
+  title = "Code Snippet",
   githubUrl,
 }) => {
   const [isVisible, setIsVisible] = useState(false);
 
   return (
-    <div className="my-6 border rounded-lg overflow-hidden bg-[#1e1e1e] hover:cursor-pointer" onClick={() => setIsVisible(!isVisible)}>
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-900 text-gray-100 text-sm font-mono">
-        <div
-          className="flex items-center gap-1 text-left focus:outline-none"
-        >
+    <div className="my-6 border rounded-lg overflow-hidden hover:cursor-pointer">
+      <div
+        className="flex items-center justify-between px-4 py-2 bg-gray-900 text-gray-100 text-sm font-mono"
+        onClick={() => setIsVisible(!isVisible)}
+      >
+        <div className="flex items-center gap-1 text-left">
           {isVisible ? (
             <ChevronDown className="w-4 h-4" />
           ) : (
             <ChevronRight className="w-4 h-4" />
           )}
-          {title || "Code Snippet"}
+          {title}
         </div>
         {githubUrl && (
           <a
@@ -45,9 +43,9 @@ const CodeBlock: React.FC<CodeBlockProps> = ({
         )}
       </div>
       {isVisible && (
-        <SyntaxHighlighter language={language} className="p-4">
+        <pre className="p-4 bg-gray-800 text-white overflow-x-auto">
           {code.trim()}
-        </SyntaxHighlighter>
+        </pre>
       )}
     </div>
   );
