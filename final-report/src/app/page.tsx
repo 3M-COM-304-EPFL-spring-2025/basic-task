@@ -1,3 +1,4 @@
+"use client";
 import React from "react";
 import ReportCard from "./components/ReportCard";
 import SectionHeader from "./components/SectionHeader";

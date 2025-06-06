@@ -1,3 +1,4 @@
+"use client";
 // components/CodeBlock.tsx
 import { useState } from "react";
 import { ChevronDown, ChevronRight, ExternalLink } from "lucide-react";
