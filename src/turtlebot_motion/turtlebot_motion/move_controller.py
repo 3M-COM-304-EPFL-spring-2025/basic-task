@@ -3,6 +3,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, ActionClient, GoalResponse
 from threading import Lock
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
 
 class MoveController(Node):
 
@@ -60,9 +63,47 @@ class MoveController(Node):
             'rotate_angle'
         )
 
+        self.bridge = CvBridge()
+        self.rgb_image = None
+        self.depth_image = None
+
+        self.rgb_sub = self.create_subscription(
+            Image,
+            '/oak/rgb/image_raw',  # Check topic name with `ros2 topic list`
+            self.rgb_callback,
+            10
+        )
+
+        self.depth_sub = self.create_subscription(
+            Image,
+            '/oak/stereo/depth',  # Check this topic name as well
+            self.depth_callback,
+            10
+        )
+
+    def rgb_callback(self, msg):
+        self.rgb_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+
+    def depth_callback(self, msg):
+        self.depth_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='passthrough')
+
+    def show_images(self):
+        print("Showing images...")
+        print(f"RGB Image: {self.rgb_image.shape if self.rgb_image is not None else 'None'}")
+        print(f"Depth Image: {self.depth_image.shape if self.depth_image is not None else 'None'}")
+        if self.rgb_image is not None:
+            cv2.imshow("RGB Image", self.rgb_image)
+        if self.depth_image is not None:
+            norm_depth = cv2.normalize(self.depth_image, None, 0, 255, cv2.NORM_MINMAX)
+            depth_colormap = cv2.applyColorMap(norm_depth.astype('uint8'), cv2.COLORMAP_JET)
+            cv2.imshow("Depth Image", depth_colormap)
+        cv2.waitKey(1)  # Required for OpenCV window to refresh
+
+
+
     def undock(self, goal_handle):
         self.get_logger().info('Undocking the robot...')
-        self._undock_action_client.wait_for_server()
+        self._undock_action_client()
         
         undock_goal = Undock.Goal()
         self._goal_future = self._undock_action_client.send_goal_async(undock_goal)
@@ -134,6 +175,8 @@ class MoveController(Node):
         def get_result_callback(future):
             self.result = future.result().result
             self.get_logger().info('Drive Completed. Result: {0}'.format(self.result))
+
+            self.show_images()
 
             goal_handle.succeed()
 
