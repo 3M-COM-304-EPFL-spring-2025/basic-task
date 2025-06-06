@@ -1,8 +1,4 @@
-# written by Enrique Fernández-Laguilhoat Sánchez-Biezma and Daniel García López
-
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 
 # 3rd partys
 import numpy as np
@@ -40,12 +36,11 @@ from nav2_msgs.action import NavigateToPose
 from matplotlib import pyplot as plt
 
 
-# ros2 action send_goal wander explorer_interfaces/action/Wander "{strategy: 1, map_completed_thres: 0.6}"
-
 class LaserSubscriber(Node):
     def __init__(self):
         super().__init__('laser_subscriber')
-        self.subscription = self.create_subscription(LaserScan, 'scan', self.listener_callback, 10)
+        self.subscription = self.create_subscription(
+            LaserScan, 'scan', self.listener_callback, 10)
         self.ranges = [0.0] * 640
         self.forward_distance = 1000.0
         self.left_forward_distance = 1000.0
@@ -54,13 +49,14 @@ class LaserSubscriber(Node):
         self.right_distance = 1000.0
         self.back_distance = 1000.0
         self.accumulated_distance = 0.0
-        self.closest_obstacle_distance = 1000.0 # closest obstacle distance forward (0-180 degrees)
+        # closest obstacle distance forward (0-180 degrees)
+        self.closest_obstacle_distance = 1000.0
         self.subscription  # prevent unused variable warning
-        self.size=0
+        self.size = 0
 
     def listener_callback(self, msg):
         self.ranges = msg.ranges
-        self.size=len(msg.ranges)
+        self.size = len(msg.ranges)
         self.left_distance = msg.ranges[self.size//2]
         self.left_forward_distance = msg.ranges[3*self.size//8]
         self.forward_distance = msg.ranges[self.size//4]
@@ -72,42 +68,43 @@ class LaserSubscriber(Node):
         print(f"Closest obstacle distance: {self.closest_obstacle_distance:.2f}")
 
 
-
 class CmdVelPublisher(Node):
     def __init__(self):
         super().__init__('cmd_vel_publisher')
-        self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)   
+        self.publisher_ = self.create_publisher(Twist, 'cmd_vel', 10)
+
 
 class OdomSubscriber(Node):
     def __init__(self):
         super().__init__('odom_subscriber')
         qos_profile = QoSProfile(depth=10)
         qos_profile.reliability = ReliabilityPolicy.BEST_EFFORT
-        self.subscription = self.create_subscription(Odometry, 'odom', self.listener_callback, qos_profile)
+        self.subscription = self.create_subscription(
+            Odometry, 'odom', self.listener_callback, qos_profile)
         self.odom_buffer = []
-        self.current_position=None
+        self.current_position = None
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
         self.odom_buffer.append(msg)
         if len(self.odom_buffer) > 10:
-            self.odom_buffer.pop(0)  # Keep only the last 10 odometry messages   
-        self.current_position=msg.pose.pose.position            
-
+            self.odom_buffer.pop(0)  # Keep only the last 10 odometry messages
+        self.current_position = msg.pose.pose.position
 
 
 class NavigationClient(Node):
     def __init__(self):
         super().__init__('navigation_client')
-        self._action_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self.cartographer = CartographerSubscriber()  # a cartographer subscription is created to access the occupancy
+        self._action_client = ActionClient(
+            self, NavigateToPose, 'navigate_to_pose')
+        # a cartographer subscription is created to access the occupancy
+        self.cartographer = CartographerSubscriber()
         rclpy.spin_once(self.cartographer)
-        self.subscription = OdomSubscriber()  # a subscription to the odometry is created to access the robot position
+        # a subscription to the odometry is created to access the robot position
+        self.subscription = OdomSubscriber()
         rclpy.spin_once(self.subscription)
         self.last_photo_pose = None  # this variable is used to store the last photo pose
         # grid and determine which positions to navigate to
- # prevent unused variable warning
-
 
     def goal_response_callback(self, future):
         goal_handle = future.result()
@@ -126,28 +123,30 @@ class NavigationClient(Node):
         if status == GoalStatus.STATUS_SUCCEEDED:
             self.get_logger().info('Arrived at destination')
         else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+            self.get_logger().info(
+                'Goal failed with status: {0}'.format(status))
 
         rclpy.spin_once(self.cartographer)
-        rclpy.spin_once(self.subscription)    
+        rclpy.spin_once(self.subscription)
 
-    def distance(self,p1, p2):
-        return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5   
+    def distance(self, p1, p2):
+        return ((p1.x - p2.x)**2 + (p1.y - p2.y)**2)**0.5
 
     def send_goal(self, ball_position_subscriber, cmd_vel_publisher, command=Twist()):
         self.get_logger().info('Waiting for action server...')
         self._action_client.wait_for_server()
 
-        #rclpy.spin_once(self.cartographer)  # refresh the list of accessible waypoints
-        waypoint = self.cartographer.sorted_accessible_waypoints[0]  # grab the first waypoint
-        self.cartographer.sorted_accessible_waypoints = self.cartographer.sorted_accessible_waypoints[1:]  # pop the
-        # first element from the list, in case the
-        # accessible waypoints didn't refresh
-        # write command
+        # grab the first waypoint and remove it from the list of waypoints
+        waypoint = self.cartographer.sorted_accessible_waypoints[0]
+        self.cartographer.sorted_accessible_waypoints = self.cartographer.sorted_accessible_waypoints[
+            1:]
+        
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose.header.frame_id = 'odom'
-        goal_msg.pose.pose.position.x = float(waypoint[0] + self.cartographer.origin[0])
-        goal_msg.pose.pose.position.y = float(waypoint[1] + self.cartographer.origin[1])
+        goal_msg.pose.pose.position.x = float(
+            waypoint[0] + self.cartographer.origin[0])
+        goal_msg.pose.pose.position.y = float(
+            waypoint[1] + self.cartographer.origin[1])
         self.last_photo_pose = self.get_current_position()  # save the last photo pose
         # goal_msg.pose.pose.orientation.w = 1.0
 
@@ -162,12 +161,13 @@ class NavigationClient(Node):
 
         goal_handle = self._send_goal_future.result()
         get_result_future = goal_handle.get_result_async()
-        
-        #rclpy.spin_until_future_complete(self, get_result_future)
-        position= self.get_current_position()
+
+        # rclpy.spin_until_future_complete(self, get_result_future)
+        position = self.get_current_position()
         if position is not None:
-            self.get_logger().info(f'Robot position -> x: {position.x}, y: {position.y}, z: {position.z}')
-               
+            self.get_logger().info(
+                f'Robot position -> x: {position.x}, y: {position.y}, z: {position.z}')
+
         while not get_result_future.done():
             rclpy.spin_once(self)
             rclpy.spin_once(ball_position_subscriber)
@@ -178,9 +178,12 @@ class NavigationClient(Node):
             if current_pos is None:
                 self.get_logger().info("No odometry data available yet.")
                 continue
-            self.get_logger().info(f'Current goal position -> x: {goal_msg.pose.pose.position.x}, y: {goal_msg.pose.pose.position.y}')
-            self.get_logger().info(f'Distance to goal: {self.distance(current_pos, goal_msg.pose.pose.position):.2f} meters')
-            self.get_logger().info(f'Distance to last photo pose: {self.distance(current_pos, self.last_photo_pose):.2f} meters')
+            self.get_logger().info(
+                f'Current goal position -> x: {goal_msg.pose.pose.position.x}, y: {goal_msg.pose.pose.position.y}')
+            self.get_logger().info(
+                f'Distance to goal: {self.distance(current_pos, goal_msg.pose.pose.position):.2f} meters')
+            self.get_logger().info(
+                f'Distance to last photo pose: {self.distance(current_pos, self.last_photo_pose):.2f} meters')
 
             if current_pos and self.distance(current_pos, self.last_photo_pose) >= 3.0:
                 self.get_logger().info("3 meters passed — taking photo sequence.")
@@ -193,9 +196,11 @@ class NavigationClient(Node):
                 print(cancel_result)
                 self.get_logger().info("Goal cancelled successfully.")
 
-                spin_detect_ball(self.subscription, cmd_vel_publisher, command, ball_position_subscriber)
+                spin_detect_ball(self.subscription, cmd_vel_publisher,
+                                 command, ball_position_subscriber)
                 # Resend goal
-                self._send_goal_future = self._action_client.send_goal_async(goal_msg)
+                self._send_goal_future = self._action_client.send_goal_async(
+                    goal_msg)
                 rclpy.spin_until_future_complete(self, self._send_goal_future)
                 goal_handle = self._send_goal_future.result()
 
@@ -221,32 +226,38 @@ class NavigationClient(Node):
         else:
             self.get_logger().info("No odometry data available yet.")
             return None
-        
+
+
 class VisualCoverageSubscriber(Node):
     def __init__(self):
         super().__init__('visual_coverage_subscriber')
-        self.subscription = self.create_subscription(OccupancyGrid, 'visual_coverage_map', self.listener_callback, 10)
+        self.subscription = self.create_subscription(
+            OccupancyGrid, 'visual_coverage_map', self.listener_callback, 10)
         self.coverage_map = None
         self.map_info = None
         self.subscription  # prevent unused variable warning
 
     def listener_callback(self, msg):
-        self.coverage_map = np.array(msg.data).reshape((msg.info.height, msg.info.width))
+        self.coverage_map = np.array(msg.data).reshape(
+            (msg.info.height, msg.info.width))
         self.map_info = msg.info
-        self.get_logger().info('Received visual coverage map.')        
+        self.get_logger().info('Received visual coverage map.')
 
 
 class CartographerSubscriber(Node):
     def __init__(self):
         super().__init__('cartographer_subscriber')
-        self.occupancy_subscription = self.create_subscription(OccupancyGrid, 'map', self.occupancy_callback, 10)
+        self.occupancy_subscription = self.create_subscription(
+            OccupancyGrid, 'map', self.occupancy_callback, 10)
 
-        self.waypoints = self.generate_list_of_waypoints(n_of_waypoints=100, step=0.2)
+        self.waypoints = self.generate_list_of_waypoints(
+            n_of_waypoints=100, step=0.2)
         self.accessible_waypoints = np.array([])
         self.sorted_accessible_waypoints = np.array([])
         self.occupancy_value = np.array([])
         self.origin = np.array([0.0, 0.0])
-        self.visual_node = VisualCoverageSubscriber()  # a visual coverage subscriber is created to access the visual coverage map
+        # a visual coverage subscriber is created to access the visual coverage map
+        self.visual_node = VisualCoverageSubscriber()
         rclpy.spin_once(self.visual_node)  # refresh the visual coverage map
 
     def occupancy_callback(self, msg):
@@ -267,20 +278,20 @@ class CartographerSubscriber(Node):
 
         resolution = msg.info.resolution  # get the resolution
         origin = msg.info.origin.position  # get the origin of the map
-        self.origin = np.array([origin.x, origin.y])  # save the origin in a numpy array
+        # save the origin in a numpy array
+        self.origin = np.array([origin.x, origin.y])
         # get the map origin in the occupancy grid
         origin_x = int((origin.x) / resolution)
         origin_y = int((origin.y) / resolution)
 
-
         # reshape the data so it resembles the map shape
         data = np.reshape(data, (current_map_height, current_map_width))
-        self.waypoints = self.generate_waypoints_from_map(current_map_width, current_map_height, resolution)
-        waypoints_height= max(self.waypoints[:,0])
-        waypoints_width=max(self.waypoints[:,1])
-        self.get_logger().info(f"Waypoints height: {waypoints_height}, Waypoints width: {waypoints_width}")
-    
-        
+        self.waypoints = self.generate_waypoints_from_map(
+            current_map_width, current_map_height, resolution)
+        waypoints_height = max(self.waypoints[:, 0])
+        waypoints_width = max(self.waypoints[:, 1])
+        self.get_logger().info(
+            f"Waypoints height: {waypoints_height}, Waypoints width: {waypoints_width}")
 
         # Here we go through every waypoint and save the ones that are accessible.
         # An accessible waypoint is one which has no obstacles, and has few or no unknown squares in the vicinity.
@@ -290,27 +301,30 @@ class CartographerSubscriber(Node):
         for waypoint in self.waypoints:
             try:
                 occupancy_grid_coordinates = [int((waypoint[1]) / resolution), int((waypoint[0]) /
-                                                                                         resolution)]
+                                                                                   resolution)]
 
-
-                accessible, score = self.convolute(data, self.visual_node.coverage_map, occupancy_grid_coordinates, size=5, occ_threshold=40)  # perform convolution
+                accessible, score = self.convolute(
+                    # perform convolution
+                    data, self.visual_node.coverage_map, occupancy_grid_coordinates, size=5, occ_threshold=40)
 
                 # if the convolution returns True, it means the WP is accessible, so it is stored in
                 # self.accessible_waypoints
                 if accessible:
-                    self.accessible_waypoints = np.append(self.accessible_waypoints, waypoint)
-                    self.occupancy_value = np.append(self.occupancy_value, score)  # store the score of the WP
+                    self.accessible_waypoints = np.append(
+                        self.accessible_waypoints, waypoint)
+                    self.occupancy_value = np.append(
+                        self.occupancy_value, score)  # store the score of the WP
                 else:
                     # if the convolution returns False, it means the WP is not accessible, so it is stored in
                     # self.unaccessible_waypoints
-                    unaccessible_waypoints = np.append(unaccessible_waypoints, waypoint)
+                    unaccessible_waypoints = np.append(
+                        unaccessible_waypoints, waypoint)
             # because the waypoint array is over-sized, we need to remove the values that are out of range
 
             except IndexError:
                 pass
 
             # scatter the accessible and unaccessible waypoints in the map with different colors
-            
 
         # reshape the accessible waypoints array to shape (n, 2)
         self.accessible_waypoints = self.accessible_waypoints.reshape(-1, 2)
@@ -321,7 +335,8 @@ class CartographerSubscriber(Node):
 
         # Default fallback waypoints
         if np.size(self.sorted_accessible_waypoints) == 0:
-            self.sorted_accessible_waypoints = np.array([[1.5, 0.0], [0.0, 1.5], [-1.5, 0.0], [0.0, -1.5]])
+            self.sorted_accessible_waypoints = np.array(
+                [[1.5, 0.0], [0.0, 1.5], [-1.5, 0.0], [0.0, -1.5]])
 
         self.get_logger().info('Accessible waypoints have been updated...')
 
@@ -375,7 +390,6 @@ class CartographerSubscriber(Node):
 
     @staticmethod
     def convolute(data, coverage_map, coordinates, size=3, occ_threshold=40, coverage_weight=0.5):
-
         """
         Performs a convolution operation on the occupancy grid data to determine if a waypoint is accessible.
         """
@@ -399,11 +413,11 @@ class CartographerSubscriber(Node):
         coverage_avg = coverage_sum / area  # 0 if fully seen, 1 if fully unseen
 
         if occ_avg < occ_threshold:
-            score = (1 - coverage_weight) * occ_avg + coverage_weight * (100 * coverage_avg)
+            score = (1 - coverage_weight) * occ_avg + \
+                coverage_weight * (100 * coverage_avg)
             return True, score
         else:
             return False, float('inf')
-
 
     def generate_list_of_waypoints(self, n_of_waypoints, step):
         """
@@ -421,13 +435,14 @@ class CartographerSubscriber(Node):
         i = 0
         for index_y in range(n_of_waypoints):
             for index_x in range(n_of_waypoints):
-                waypoints[i] = [float(index_x) / (1/step), float(index_y) / (1/step)]
+                waypoints[i] = [float(index_x) / (1/step),
+                                float(index_y) / (1/step)]
                 i += 1
 
         self.get_logger().info("Grid of waypoints has been generated.")
 
         return waypoints
-    
+
     def generate_waypoints_from_map(self, map_width, map_height, resolution, step=0.2):
         """
         Generate waypoints that span the full map area based on its current size, origin, and resolution.
@@ -450,7 +465,7 @@ class CartographerSubscriber(Node):
 
         return waypoints
 
-      
+
 def reset_commands(command: Twist) -> Twist:
     """Resets all Twist commands to zero."""
     command.linear.x = 0.0
@@ -459,10 +474,10 @@ def reset_commands(command: Twist) -> Twist:
     command.angular.x = 0.0
     command.angular.y = 0.0
     command.angular.z = 0.0
-    return command 
+    return command
 
 
-def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, command:Twist, camera_subscriber):
+def spin_detect_ball(subscriber: LaserSubscriber, publisher: CmdVelPublisher, command: Twist, camera_subscriber):
     """
     Makes the robot spin 360 degrees, stopping every 60 degrees to check for a ball using YOLO.
     """
@@ -473,10 +488,12 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
 
     angular_speed = 2.0  # radians per second
     angle_per_step = math.pi / 6  # 60 degrees = π/3 radians
-    spin_time_per_step = angle_per_step / abs(angular_speed)  # time to rotate 60 degrees
+    spin_time_per_step = angle_per_step / \
+        abs(angular_speed)  # time to rotate 60 degrees
 
     for step in range(6):
-        publisher.get_logger().info(f"Step {step + 1} of 6: Rotating {math.degrees(angle_per_step)} degrees...")
+        publisher.get_logger().info(
+            f"Step {step + 1} of 6: Rotating {math.degrees(angle_per_step)} degrees...")
 
         # Start rotating
         command = reset_commands(command)
@@ -487,46 +504,32 @@ def spin_detect_ball( subscriber : LaserSubscriber, publisher: CmdVelPublisher, 
         start_time = time.time()
         print(f"Rotating for {spin_time_per_step:.2f} seconds...")
         while time.time() - start_time < 2*spin_time_per_step:
-            #print(f"Rotating... {time.time() - start_time:.2f} seconds elapsed")
-            #rclpy.spin_once(subscriber)
-            #print("Checking for obstacles...")
-            #rclpy.spin_once(camera_subscriber)
+            # print(f"Rotating... {time.time() - start_time:.2f} seconds elapsed")
+            # rclpy.spin_once(subscriber)
+            # print("Checking for obstacles...")
+            # rclpy.spin_once(camera_subscriber)
             pass
 
         # Stop rotation
         command = reset_commands(command)
         publisher.publisher_.publish(command)
-        current_time = time.time()
         print("Waiting for 1 seconds to stabilize...")
-        #rclpy.spin_once(camera_subscriber)
-        time.sleep(1)  # Wait for 4 seconds to stabilize
-            #rclpy.spin_once(subscriber)
-        #rclpy.spin_once(camera_subscriber)
-        
+        time.sleep(1)  # Wait for 1 second to stabilize
+
         if camera_subscriber.ball_position is not None:
-            publisher.get_logger().info(f"Ball position detected: {camera_subscriber.ball_position}")
+            publisher.get_logger().info(
+                f"Ball position detected: {camera_subscriber.ball_position}")
             ball_detected = True
             break
-        
 
         publisher.get_logger().info(f"Checking for ball at step {step + 1}...")
-
-        # Perform YOLO detection
-        """""
-        if detect_ball(camera_subscriber, model):
-            ball_detected = True
-            publisher.get_logger().info("Ball detected!")
-            break
-        else:
-            publisher.get_logger().info("No ball detected.")
-            """
-
 
     command = reset_commands(command)
     publisher.publisher_.publish(command)
     publisher.get_logger().info("Finished 360° spin.")
 
     return ball_detected
+
 
 class BallPositionSubscriber(Node):
     def __init__(self):
@@ -543,10 +546,13 @@ class BallPositionSubscriber(Node):
     def listener_callback(self, msg):
         if msg.data[0] != 0.0 and msg.data[1] != 0.0:
             self.ball_position = (msg.data[0], msg.data[1])
-            self.get_logger().info(f"Initial ball position set: {self.ball_position}")
+            self.get_logger().info(
+                f"Initial ball position set: {self.ball_position}")
         else:
-            self.get_logger().info(f"Received new ball position: {msg.data[0]}, {msg.data[1]}")
+            self.get_logger().info(
+                f"Received new ball position: {msg.data[0]}, {msg.data[1]}")
         self.get_logger().info(f"Ball position received: {self.ball_position}")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -554,41 +560,42 @@ def main(args=None):
     print("Starting the navigation client...")
     navigation = NavigationClient()
     laser_subscriber = LaserSubscriber()
-    #camera_subscriber = CameraSubscriber()
+    # camera_subscriber = CameraSubscriber()
     cmd_vel_publisher = CmdVelPublisher()
     ball_position_subscriber = BallPositionSubscriber()  # Nouvelle instance
     command = Twist()
 
     print("Navigation client started.")
-    print("Will spin the subscription to the laser scanner and camera...")
-    #rclpy.spin_once(laser_subscriber)
-    #rclpy.spin_once(camera_subscriber)
-    print("Laser scanner and camera subscriptions spun once.")
     print("Will spin the ball position subscriber...")
-    rclpy.spin_once(ball_position_subscriber)  # Spin the ball position subscriber once to initialize it
+    rclpy.spin_once(ball_position_subscriber)
     print("Ball position subscriber spun once.")
     print("Starting the navigation loop...")
 
     while rclpy.ok():
-        navigation.send_goal(ball_position_subscriber, cmd_vel_publisher, command)
+        navigation.send_goal(ball_position_subscriber,
+                             cmd_vel_publisher, command)
         rclpy.spin_once(ball_position_subscriber)
         if ball_position_subscriber.ball_position is None and spin_detect_ball(laser_subscriber, cmd_vel_publisher, command, ball_position_subscriber):
             navigation.get_logger().info("Ball detected, stopping navigation.")
         if ball_position_subscriber.ball_position is not None:
-            navigation.get_logger().info(f"Ball position: {ball_position_subscriber.ball_position}")
+            navigation.get_logger().info(
+                f"Ball position: {ball_position_subscriber.ball_position}")
             # navigate to the ball position
             goal_msg = NavigateToPose.Goal()
             goal_msg.pose.header.frame_id = 'odom'
             goal_msg.pose.pose.position.x = ball_position_subscriber.ball_position[0]
             goal_msg.pose.pose.position.y = ball_position_subscriber.ball_position[1]
-            goal_msg.pose.pose.orientation.w = 1.0  # Assuming no specific orientation is required
+            # Assuming no specific orientation is required
+            goal_msg.pose.pose.orientation.w = 1.0
 
             navigation.get_logger().info(
                 f"Sending navigation goal to ball position x: {goal_msg.pose.pose.position.x}, y: {goal_msg.pose.pose.position.y}"
             )
 
-            navigation._send_goal_future = navigation._action_client.send_goal_async(goal_msg)
-            rclpy.spin_until_future_complete(navigation, navigation._send_goal_future)
+            navigation._send_goal_future = navigation._action_client.send_goal_async(
+                goal_msg)
+            rclpy.spin_until_future_complete(
+                navigation, navigation._send_goal_future)
 
             goal_handle = navigation._send_goal_future.result()
             if not goal_handle.accepted:
@@ -606,7 +613,6 @@ def main(args=None):
                 navigation.get_logger().info("Failed to reach ball position.")
         else:
             navigation.get_logger().info("No ball position received yet, continuing navigation...")
-            
 
           # Vérifie les mises à jour de la position de la balle
     print("Navigation loop finished.")
@@ -615,7 +621,6 @@ def main(args=None):
     laser_subscriber.destroy_node()
     ball_position_subscriber.destroy_node()  # Détruire le nouveau subscriber
     rclpy.shutdown()
-    
 
 
 if __name__ == '__main__':
